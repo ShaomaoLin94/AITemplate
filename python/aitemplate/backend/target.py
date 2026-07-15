@@ -49,6 +49,7 @@ class TargetType(IntEnum):
 
     cuda = 1
     rocm = 2
+    cpu = 3
 
 
 class Target:
@@ -524,3 +525,9 @@ def ROCM(template_path: str = COMPOSABLE_KERNEL_PATH, arch: str = "gfx908", **kw
     """Create a ROCM target."""
     func = registry.get("rocm.create_target")
     return func(template_path, arch, **kwargs)
+
+
+def CPU(arch: str = "x86_64", **kwargs):
+    """Create a CPU target."""
+    func = registry.get("cpu.create_target")
+    return func(arch=arch, **kwargs)

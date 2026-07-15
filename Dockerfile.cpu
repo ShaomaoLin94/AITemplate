@@ -1,0 +1,22 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y \
+    git \
+    build-essential \
+    cmake \
+    python3 \
+    python3-pip \
+    python3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip3 install --upgrade pip setuptools wheel
+RUN pip3 install numpy jinja2 pytest parameterized sympy
+RUN pip3 install torch --index-url https://download.pytorch.org/whl/cpu
+
+ENV PYTHONPATH=/workspace/AITemplate/python
+
+WORKDIR /workspace/AITemplate
+
+CMD ["/bin/bash"]

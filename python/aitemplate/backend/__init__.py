@@ -20,6 +20,7 @@ from aitemplate.backend import (  # noqa
     backend_spec,
     builder,
     codegen,
+    cpu,
     cuda,
     profiler_runner,
     registry,
@@ -30,6 +31,7 @@ from aitemplate.backend import (  # noqa
 __all__ = [
     "builder",
     "codegen",
+    "cpu",
     "cuda",
     "profiler_runner",
     "registry",

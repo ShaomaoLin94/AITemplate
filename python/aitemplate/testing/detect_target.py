@@ -20,7 +20,7 @@ import logging
 import os
 from subprocess import PIPE, Popen
 
-from aitemplate.backend.target import CUDA, ROCM
+from aitemplate.backend.target import CPU, CUDA, ROCM
 
 # pylint: disable=W0702, W0612,R1732
 
@@ -108,6 +108,12 @@ def detect_target(**kwargs):
 
     """
     global IS_CUDA, FLAG
+
+    requested_target = os.getenv("AIT_TARGET", "").strip().lower()
+    if requested_target == "cpu":
+        _LOGGER.info("Set target to CPU")
+        return CPU(**kwargs)
+
     if FLAG:
         if IS_CUDA:
             return CUDA(arch=FLAG, **kwargs)

@@ -99,6 +99,20 @@ class CPU(Target):
             os.path.join(self.static_files_path, "include"),
         ]
 
+    def copy_headers_and_csrc_to_workdir(self, workdir: str) -> List[str]:
+        """Copy shared runtime files needed by the CPU backend."""
+        sources = super().copy_headers_and_csrc_to_workdir(workdir)
+
+        # debug_utility.cpp currently contains CUDA kernels and CUDA
+        # kernel-launch syntax. CPU debug utilities will be implemented
+        # separately.
+        debug_source = f"debug_utility{self.src_extension()}"
+        return [
+            source
+            for source in sources
+            if os.path.basename(source) != debug_source
+        ]
+
     def get_host_compiler_options(self) -> List[str]:
         options = [
             "-O3",

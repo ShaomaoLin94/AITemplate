@@ -372,6 +372,7 @@ class Builder:
         _LOGGER.info("Building " + target)
         cc = Target.current().cc()
         compile_options = Target.current().compile_options()
+        link_options = Target.current().link_options()
         fpic = "-fPIC"
         if "nvcc" in cc:
             fpic = "-Xcompiler=-fPIC"
@@ -400,6 +401,7 @@ class Builder:
             """
 CC = {{cc}}
 CFLAGS = {{CFLAGS}}
+LDFLAGS = {{LDFLAGS}}
 fPIC_flag = {{fPIC}}
 
 obj_files = {{obj_files}}
@@ -435,7 +437,7 @@ clean_constants:
 """
         )
 
-        build_so_cmd = "$(CC) -shared $(fPIC_flag) $(CFLAGS) -o $@ $(obj_files)"
+        build_so_cmd = "$(CC) -shared $(fPIC_flag) $(CFLAGS) -o $@ $(obj_files) $(LDFLAGS)"
         standalone_src = "standalone.cu"
         standalone_obj = "standalone.obj"
         windll_obj = "windll.obj"
@@ -465,6 +467,7 @@ clean_constants:
 
         cc = Target.current().cc()
         compile_options = Target.current().compile_options()
+        link_options = Target.current().link_options()
 
         fpic, cpp = "-fPIC", "cpp"
         if "nvcc" in cc:
@@ -511,6 +514,7 @@ clean_constants:
             cc=cc,
             cpp=cpp,
             CFLAGS=compile_options,
+            LDFLAGS=link_options,
             fPIC=fpic,
             obj_files=obj_files,
             dll_target=dll_name,

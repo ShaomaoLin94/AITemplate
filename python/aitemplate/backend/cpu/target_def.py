@@ -82,6 +82,10 @@ class CPU(Target):
     def compile_options(self):
         return self._compile_options
 
+    def link_options(self):
+        """Return libraries required by generated CPU models."""
+        return "-L/usr/local/lib -Wl,-rpath,/usr/local/lib -lXNNPACK"
+
     def src_extension(self):
         return ".cpp"
 

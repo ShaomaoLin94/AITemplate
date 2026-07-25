@@ -80,8 +80,13 @@ class softmax(Operator):
         super().__init__()
         self._attrs["op"] = "softmax"
         self._attrs["has_profiler"] = False
-        if detect_target().name() == "rocm":
-            self._attrs["has_profiler"] = True
+        try:
+            if detect_target().name() == "rocm":
+                self._attrs["has_profiler"] = True
+        except RuntimeError:
+            # A pure CPU environment has no CUDA/ROCm target to auto-detect.
+            # CPU softmax does not use the GPU-style profiler.
+            pass
 
     def _infer_shapes(self, x: Tensor) -> List[IntVar]:
         """Infer output shape for the softmax op.

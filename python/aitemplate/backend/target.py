@@ -198,6 +198,10 @@ class Target:
         """
         return ""
 
+    def link_options(self) -> str:
+        """Options used when linking the final target library."""
+        return ""
+
     def src_extension(self):
         """Source file extension for this target.
 

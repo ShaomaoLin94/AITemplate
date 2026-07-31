@@ -98,6 +98,10 @@ class CPU(Target):
             return None
         return min(algo_names)
 
+    def use_dummy_profiling_results(self) -> bool:
+        """CPU delegates kernel selection to libraries such as XNNPACK."""
+        return True
+
     def get_include_directories(self) -> List[str]:
         return [
             os.path.join(self.static_files_path, "include"),

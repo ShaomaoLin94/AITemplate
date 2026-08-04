@@ -69,7 +69,18 @@ class layernorm(Operator):
         super().__init__()
         self._attrs["op"] = "layernorm"
         self._attrs["has_profiler"] = False
-        if detect_target().name() == "rocm":
+        
+        # Additional code for CPU backend
+        # Pure CPU environments have no CUDA/ROCm target to detect
+        # e.g. layernorm operator 
+        try:
+            target_name = detect_target().name()
+        except RuntimeError as exc:
+            if str(exc) != "Unsupported platform":
+                raise
+            target_name = None
+
+        if target_name == "rocm":
             self._attrs["has_profiler"] = True
         self._attrs["default_normalized_shape"] = normalized_shape
         self._attrs["normalized_shape"] = []

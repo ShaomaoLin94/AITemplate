@@ -88,9 +88,10 @@ struct {{func_name}}_xnn_operator_guard {
   const size_t extra_elements =
       (XNN_EXTRA_BYTES + sizeof(float) - 1) / sizeof(float);
 
-  thread_local std::vector<float> input_scratch;
+  thread_local std::vector<float> input_scratch; // thread_local to avoid reallocation on repeated calls during inference
   input_scratch.resize(input_elements + extra_elements);
-
+ 
+  // padding with zeros to match the format of XNNPACK fully-connected kernels
   std::memcpy(
       input_scratch.data(),
       a_ptr,
@@ -103,7 +104,7 @@ struct {{func_name}}_xnn_operator_guard {
 
   // Keep the GEMM result separate from the final output.
   // This also remains correct if AITemplate ever aliases
-  // the residual and output buffers.
+  // the residual and output buffers
   const size_t output_elements = m * n;
 
   thread_local std::vector<float> gemm_scratch;
@@ -119,7 +120,8 @@ struct {{func_name}}_xnn_operator_guard {
           n,  // output stride
           b_ptr,
           bias_ptr,
-          -std::numeric_limits<float>::infinity(),
+          // tell XNNPACK not to apply ReLU or clamp
+          -std::numeric_limits<float>::infinity(),  
           +std::numeric_limits<float>::infinity(),
           0,        // flags
           nullptr,  // weights cache
@@ -146,7 +148,6 @@ struct {{func_name}}_xnn_operator_guard {
           nullptr),
       "xnn_run_operator");
 
-  // Residual connection:
   // output = GEMM(A, B) + bias + residual
   for (size_t i = 0; i < output_elements; ++i) {
     output_ptr[i] = gemm_scratch[i] + residual_ptr[i];

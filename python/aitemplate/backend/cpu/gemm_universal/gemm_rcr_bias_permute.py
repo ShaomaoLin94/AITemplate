@@ -2,7 +2,7 @@
 #
 # Licensed under the Apache License, Version 2.0.
 
-"""CPU gemm_rcr_bias_add codegen backed by XNNPACK."""
+"""CPU gemm_rcr_bias_permute_m2n3 backed by XNNPACK."""
 
 from collections import OrderedDict
 from typing import Any, Dict
@@ -14,7 +14,7 @@ from aitemplate.backend.cpu.gemm_universal.gemm_rcr_bias import (
     _dim_expr,
     _validate,
 )
-from aitemplate.compiler.dtype import normalize_dtype
+from aitemplate.compiler.base import IntImm
 
 
 FUNC_TEMPLATE = jinja2.Template(
@@ -53,15 +53,17 @@ struct {{func_name}}_xnn_operator_guard {
     }
   }
 
+  {{func_name}}_xnn_operator_guard() = default;
+
   {{func_name}}_xnn_operator_guard(
       const {{func_name}}_xnn_operator_guard&) = delete;
+
   {{func_name}}_xnn_operator_guard& operator=(
       const {{func_name}}_xnn_operator_guard&) = delete;
-
-  {{func_name}}_xnn_operator_guard() = default;
 };
 
 }  // namespace
+
 
 {{func_signature}}
 {
@@ -71,27 +73,41 @@ struct {{func_name}}_xnn_operator_guard {
     return;
   }
 
-  static const xnn_status init_status = xnn_initialize(nullptr);
+  if (m % t1 != 0 || n % (t2 * t3) != 0) {
+    throw std::runtime_error(
+        "CPU gemm_rcr_bias_permute_m2n3: invalid dimensions");
+  }
+
+  static const xnn_status init_status =
+      xnn_initialize(nullptr);
+
   {{func_name}}_check_xnn_status(
       init_status,
       "xnn_initialize");
 
-  const float* a_ptr = static_cast<const float*>(a);
-  const float* b_ptr = static_cast<const float*>(b);
-  const float* bias_ptr = static_cast<const float*>(bias);
-  const float* residual_ptr = static_cast<const float*>(residual);
-  float* output_ptr = static_cast<float*>(output);
+  const float* a_ptr =
+      static_cast<const float*>(a);
 
-  // XNNPACK fully-connected kernels may read a few bytes past
-  // the logical end of the input.
+  const float* b_ptr =
+      static_cast<const float*>(b);
+
+  const float* bias_ptr =
+      static_cast<const float*>(bias);
+
+  float* output_ptr =
+      static_cast<float*>(output);
+
   const size_t input_elements = m * k;
-  const size_t extra_elements =
-      (XNN_EXTRA_BYTES + sizeof(float) - 1) / sizeof(float);
 
-  thread_local std::vector<float> input_scratch; // thread_local to avoid reallocation on repeated calls during inference
-  input_scratch.resize(input_elements + extra_elements);
- 
-  // padding with zeros to match the format of XNNPACK fully-connected kernels
+  const size_t extra_elements =
+      (XNN_EXTRA_BYTES + sizeof(float) - 1) /
+      sizeof(float);
+
+  thread_local std::vector<float> input_scratch;
+
+  input_scratch.resize(
+      input_elements + extra_elements);
+
   std::memcpy(
       input_scratch.data(),
       a_ptr,
@@ -102,29 +118,29 @@ struct {{func_name}}_xnn_operator_guard {
       input_scratch.end(),
       0.0f);
 
-  // Keep the GEMM result separate from the final output.
-  // This also remains correct if AITemplate ever aliases
-  // the residual and output buffers
-  const size_t output_elements = m * n;
-
+  // XNNPACK first produces the normal GEMM result:
+  //
+  // [M, N]
+  //
+  // We then physically permute it into m2n3 layout.
   thread_local std::vector<float> gemm_scratch;
-  gemm_scratch.resize(output_elements);
+
+  gemm_scratch.resize(m * n);
 
   {{func_name}}_xnn_operator_guard guard;
 
   {{func_name}}_check_xnn_status(
       xnn_create_fully_connected_nc_f32(
-          k,  // input channels
-          n,  // output channels
-          k,  // input stride
-          n,  // output stride
+          k,
+          n,
+          k,
+          n,
           b_ptr,
           bias_ptr,
-          // tell XNNPACK not to apply ReLU or clamp
-          -std::numeric_limits<float>::infinity(),  
+          -std::numeric_limits<float>::infinity(),
           +std::numeric_limits<float>::infinity(),
-          0,        // flags
-          nullptr,  // weights cache
+          0,
+          nullptr,
           &guard.op),
       "xnn_create_fully_connected_nc_f32");
 
@@ -148,9 +164,54 @@ struct {{func_name}}_xnn_operator_guard {
           nullptr),
       "xnn_run_operator");
 
-  // output = GEMM(A, B) + bias + residual
-  for (size_t i = 0; i < output_elements; ++i) {
-    output_ptr[i] = gemm_scratch[i] + residual_ptr[i];
+  // m2n3:
+  //
+  // GEMM [M, N]
+  //
+  // reshape:
+  // [M0, M1, N0, N1, N2]
+  //
+  // where:
+  //   M1 = t1
+  //   N0 = t2
+  //   N1 = t3
+  //
+  // permute:
+  // [N0, M0, N1, M1, N2]
+  //
+  // BERT:
+  // [B*S, 3*hidden]
+  //   ->
+  // [B, S, 3, heads, head_dim]
+  //   ->
+  // [3, B, heads, S, head_dim]
+
+  const size_t m0_size = m / t1;
+  const size_t n2_size = n / (t2 * t3);
+
+  for (size_t m0 = 0; m0 < m0_size; ++m0) {
+    for (size_t m1 = 0; m1 < t1; ++m1) {
+      const size_t src_row =
+          m0 * t1 + m1;
+
+      for (size_t n0 = 0; n0 < t2; ++n0) {
+        for (size_t n1 = 0; n1 < t3; ++n1) {
+          const size_t src =
+              src_row * n +
+              (n0 * t3 + n1) * n2_size;
+
+          const size_t dst =
+              ((((n0 * m0_size + m0) * t3 + n1)
+                  * t1 + m1)
+                  * n2_size);
+
+          std::memcpy(
+              output_ptr + dst,
+              gemm_scratch.data() + src,
+              n2_size * sizeof(float));
+        }
+      }
+    }
   }
 }
 """
@@ -163,11 +224,13 @@ void {{func_name}}(
     const void* a,
     const void* b,
     const void* bias,
-    const void* residual,
     void* output,
     size_t m,
     size_t n,
     size_t k,
+    size_t t1,
+    size_t t2,
+    size_t t3,
     ait::StreamType stream)
 """
 )
@@ -186,86 +249,66 @@ FUNC_CALL_TEMPLATE = jinja2.Template(
 {{indent}}    {{a}},
 {{indent}}    {{b}},
 {{indent}}    {{bias}},
-{{indent}}    {{residual}},
 {{indent}}    {{output}},
 {{indent}}    {{m}},
 {{indent}}    {{n}},
 {{indent}}    {{k}},
+{{indent}}    {{t1}},
+{{indent}}    {{t2}},
+{{indent}}    {{t3}},
 {{indent}}    stream);
 """
 )
 
 
-def _validate_bias_add(func_attrs: Dict[str, Any]) -> None:
-    # Reuse all A/B/bias validation from gemm_rcr_bias.
+def _static_int(value) -> int:
+    if isinstance(value, IntImm):
+        return int(value._attrs["values"][0])
+    return int(value)
+
+
+def _validate_permute(
+    func_attrs: Dict[str, Any],
+) -> None:
     _validate(func_attrs)
 
-    if len(func_attrs["inputs"]) != 4:
-        raise NotImplementedError(
-            "CPU gemm_rcr_bias_add requires A, B, bias and residual"
-        )
-
     a = func_attrs["inputs"][0]
-    b = func_attrs["inputs"][1]
-    residual = func_attrs["inputs"][3]
 
-    if normalize_dtype(residual._attrs["dtype"]) != "float32":
+    if len(a._attrs["shape"]) < 2:
         raise NotImplementedError(
-            "CPU gemm_rcr_bias_add currently supports only float32 residual"
+            "CPU gemm_rcr_bias_permute_m2n3 "
+            "requires A rank >= 2"
         )
 
-    # AITemplate may represent the GEMM output and residual
-    # with different logical shapes even though they refer to
-    # the same number of contiguous elements.
-    #
-    # Example in MultiheadAttention:
-    #   GEMM output: [batch * seq, hidden]
-    #   residual:    [batch, seq, hidden]
-    #
-    # The generated CPU kernel adds them as flat contiguous
-    # buffers, so rank equality is not required.
-
-    def static_numel(shape):
-        total = 1
-
-        for dim in shape:
-            values = dim._attrs.get("values")
-
-            if values is None or len(values) != 1:
-                return None
-
-            total *= int(values[0])
-
-        return total
-
-    # GEMM output shape is logically:
-    #   A[:-1] + [B[0]]
-    expected_shape = list(a._attrs["shape"][:-1]) + [
-        b._attrs["shape"][0]
-    ]
-
-    expected_numel = static_numel(expected_shape)
-    residual_numel = static_numel(residual._attrs["shape"])
-
-    if (
-        expected_numel is not None
-        and residual_numel is not None
-        and expected_numel != residual_numel
-    ):
+    if func_attrs.get("layout") != "Permute5D_m2n3":
         raise NotImplementedError(
-            "CPU gemm_rcr_bias_add requires residual to have "
-            "the same number of elements as the GEMM output; "
-            f"got output numel={expected_numel}, "
-            f"residual numel={residual_numel}"
+            "CPU gemm_rcr_bias_permute currently "
+            "supports only m2n3"
         )
 
+    shape = func_attrs.get("shape")
 
-@registry.reg("cpu.gemm_rcr_bias_add.config")
-def gemm_rcr_bias_add_config(
+    if shape is None or len(shape) != 3:
+        raise NotImplementedError(
+            "CPU gemm_rcr_bias_permute_m2n3 "
+            "requires shape=(t1, t2, t3)"
+        )
+
+    for dim in shape:
+        if _static_int(dim) <= 0:
+            raise ValueError(
+                "m2n3 shape dimensions must be positive"
+            )
+
+
+@registry.reg(
+    "cpu.gemm_rcr_bias_permute_m2n3.config"
+)
+def config(
     func_attrs: Dict[str, Any],
     dtype="float32",
 ) -> None:
-    _validate_bias_add(func_attrs)
+    _validate_permute(func_attrs)
 
     func_attrs["op_instance"] = OrderedDict(
         [
@@ -274,7 +317,9 @@ def gemm_rcr_bias_add_config(
     )
 
 
-@registry.reg("cpu.gemm_rcr_bias_add.filter")
+@registry.reg(
+    "cpu.gemm_rcr_bias_permute_m2n3.filter"
+)
 def function_filter(
     cfg,
     func_attrs,
@@ -283,24 +328,27 @@ def function_filter(
     return cfg == "xnnpack"
 
 
-@registry.reg("cpu.gemm_rcr_bias_add.gen_profiler")
+@registry.reg(
+    "cpu.gemm_rcr_bias_permute_m2n3.gen_profiler"
+)
 def gen_profiler(
     func_attrs,
     workdir,
     *args,
     **kwargs,
 ):
-    # XNNPACK performs CPU GEMM microkernel selection internally.
     return None
 
 
-@registry.reg("cpu.gemm_rcr_bias_add.gen_function")
+@registry.reg(
+    "cpu.gemm_rcr_bias_permute_m2n3.gen_function"
+)
 def gen_function(
     func_attrs: Dict[str, Any],
     exec_cond_template=None,
     dim_info_dict=None,
 ) -> str:
-    _validate_bias_add(func_attrs)
+    _validate_permute(func_attrs)
 
     func_name = func_attrs["name"]
 
@@ -312,9 +360,13 @@ def gen_function(
     )
 
 
-@registry.reg("cpu.gemm_rcr_bias_add.func_decl")
-def gen_function_decl(func_attrs: Dict[str, Any]) -> str:
-    _validate_bias_add(func_attrs)
+@registry.reg(
+    "cpu.gemm_rcr_bias_permute_m2n3.func_decl"
+)
+def gen_function_decl(
+    func_attrs: Dict[str, Any],
+) -> str:
+    _validate_permute(func_attrs)
 
     return FUNC_DECL.render(
         func_signature=FUNC_SIGNATURE.render(
@@ -323,39 +375,40 @@ def gen_function_decl(func_attrs: Dict[str, Any]) -> str:
     ).strip()
 
 
-@registry.reg("cpu.gemm_rcr_bias_add.func_call")
+@registry.reg(
+    "cpu.gemm_rcr_bias_permute_m2n3.func_call"
+)
 def gen_function_call(
     func_attrs: Dict[str, Any],
     indent="  ",
 ) -> str:
-    _validate_bias_add(func_attrs)
+    _validate_permute(func_attrs)
 
-    a = func_attrs["inputs"][0]
-    b = func_attrs["inputs"][1]
-    bias = func_attrs["inputs"][2]
-    residual = func_attrs["inputs"][3]
+    a, b, bias = func_attrs["inputs"]
     output = func_attrs["outputs"][0]
 
     a_shape = a._attrs["shape"]
     b_shape = b._attrs["shape"]
 
-    m = " * ".join(
-        _dim_expr(dim)
-        for dim in a_shape[:-1]
-    )
-
-    k = _dim_expr(a_shape[-1])
-    n = _dim_expr(b_shape[0])
+    t1, t2, t3 = [
+        _static_int(x)
+        for x in func_attrs["shape"]
+    ]
 
     return FUNC_CALL_TEMPLATE.render(
         func_name=func_attrs["name"],
         a=a._attrs["name"],
         b=b._attrs["name"],
         bias=bias._attrs["name"],
-        residual=residual._attrs["name"],
         output=output._attrs["name"],
-        m=m,
-        n=n,
-        k=k,
+        m=" * ".join(
+            _dim_expr(dim)
+            for dim in a_shape[:-1]
+        ),
+        n=_dim_expr(b_shape[0]),
+        k=_dim_expr(a_shape[-1]),
+        t1=str(t1),
+        t2=str(t2),
+        t3=str(t3),
         indent=indent,
     )

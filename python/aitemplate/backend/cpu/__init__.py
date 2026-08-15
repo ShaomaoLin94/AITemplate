@@ -1,4 +1,5 @@
 from aitemplate.backend.cpu import lib_template
+from aitemplate.backend.cpu.embedding import *
 from aitemplate.backend.cpu.gemm_universal import *
 from aitemplate.backend.cpu.layernorm import *
 from aitemplate.backend.cpu.softmax import *

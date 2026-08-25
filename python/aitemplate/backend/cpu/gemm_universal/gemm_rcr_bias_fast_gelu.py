@@ -10,6 +10,9 @@ from typing import Any, Dict
 import jinja2
 
 from aitemplate.backend import registry
+from aitemplate.backend.cpu.gemm_universal.static_fc import (
+    cache_id_from_tensor_name,
+)
 from aitemplate.backend.cpu.gemm_universal.gemm_rcr_bias import (
     _dim_expr,
     _validate,
@@ -20,8 +23,10 @@ FUNC_TEMPLATE = jinja2.Template(
     r"""
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <limits>
+#include <list>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -29,6 +34,8 @@ FUNC_TEMPLATE = jinja2.Template(
 #include <xnnpack.h>
 
 #include "device_functions-generated.h"
+#include "cpu_threadpool.h"
+#include "model_interface.h"
 
 namespace {
 
@@ -43,24 +50,166 @@ inline void {{func_name}}_check_xnn_status(
   }
 }
 
-struct {{func_name}}_xnn_operator_guard {
+
+struct {{func_name}}_xnn_context {
   xnn_operator_t op = nullptr;
 
-  ~{{func_name}}_xnn_operator_guard() {
+  uint64_t cache_id = 0;
+  const float* weight_ptr = nullptr;
+  const float* bias_ptr = nullptr;
+
+  size_t cached_m = 0;
+  size_t n = 0;
+  size_t k = 0;
+
+  {{func_name}}_xnn_context(
+      uint64_t id,
+      const float* weight,
+      const float* bias,
+      size_t output_channels,
+      size_t input_channels)
+      : cache_id(id),
+        weight_ptr(weight),
+        bias_ptr(bias),
+        n(output_channels),
+        k(input_channels) {
+
+    {{func_name}}_check_xnn_status(
+        xnn_create_fully_connected_nc_f32(
+            k,
+            n,
+            k,
+            n,
+            weight_ptr,
+            bias_ptr,
+            -std::numeric_limits<float>::infinity(),
+            +std::numeric_limits<float>::infinity(),
+            0,
+            nullptr,
+            &op),
+        "xnn_create_fully_connected_nc_f32");
+  }
+
+  ~{{func_name}}_xnn_context() {
     if (op != nullptr) {
       xnn_delete_operator(op);
     }
   }
 
-  {{func_name}}_xnn_operator_guard(
-      const {{func_name}}_xnn_operator_guard&) = delete;
-  {{func_name}}_xnn_operator_guard& operator=(
-      const {{func_name}}_xnn_operator_guard&) = delete;
+  {{func_name}}_xnn_context(
+      const {{func_name}}_xnn_context&) = delete;
 
-  {{func_name}}_xnn_operator_guard() = default;
+  {{func_name}}_xnn_context& operator=(
+      const {{func_name}}_xnn_context&) = delete;
+
+  bool matches(
+      uint64_t id,
+      size_t output_channels,
+      size_t input_channels) const {
+    return cache_id == id &&
+           n == output_channels &&
+           k == input_channels;
+  }
+
+  void reshape(size_t m) {
+    if (cached_m == m) {
+      return;
+    }
+
+    {{func_name}}_check_xnn_status(
+        xnn_reshape_fully_connected_nc_f32(
+            op,
+            m,
+            ait::cpu_threadpool()),
+        "xnn_reshape_fully_connected_nc_f32");
+
+    cached_m = m;
+  }
 };
 
+
+struct {{func_name}}_xnn_cache {
+  std::list<{{func_name}}_xnn_context> contexts;
+
+  {{func_name}}_xnn_context& get(
+      uint64_t cache_id,
+      const float* weight,
+      const float* bias,
+      size_t m,
+      size_t n,
+      size_t k) {
+
+    for (auto& context : contexts) {
+      if (context.matches(
+              cache_id,
+              n,
+              k)) {
+        context.reshape(m);
+        return context;
+      }
+    }
+
+    if (weight == nullptr || bias == nullptr) {
+      throw std::runtime_error(
+          "CPU static FC cache miss after raw weight release");
+    }
+
+    contexts.emplace_back(
+        cache_id,
+        weight,
+        bias,
+        n,
+        k);
+
+    auto& context = contexts.back();
+    context.reshape(m);
+
+    return context;
+  }
+};
+
+thread_local {{func_name}}_xnn_cache {{func_name}}_fc_cache;
+
 }  // namespace
+
+
+extern "C" AIT_EXPORT int {{func_name}}_prepack(
+    uint64_t cache_id,
+    const void* b,
+    const void* bias,
+    size_t n,
+    size_t k) {
+  if (n != static_cast<size_t>({{prepack_n}}) ||
+      k != static_cast<size_t>({{prepack_k}})) {
+    return 0;
+  }
+
+  static const xnn_status init_status =
+      xnn_initialize(nullptr);
+
+  {{func_name}}_check_xnn_status(
+      init_status,
+      "xnn_initialize(prepack)");
+
+  const float* b_ptr =
+      static_cast<const float*>(b);
+
+  const float* bias_ptr =
+      static_cast<const float*>(bias);
+
+  // m=1 is enough to force XNNPACK operator creation and weight packing.
+  // The real inference path will reshape the cached operator to its actual m.
+  {{func_name}}_fc_cache.get(
+      cache_id,
+      b_ptr,
+      bias_ptr,
+      1,
+      n,
+      k);
+
+  return 1;
+}
+
 
 {{func_signature}}
 {
@@ -70,25 +219,36 @@ struct {{func_name}}_xnn_operator_guard {
     return;
   }
 
-  static const xnn_status init_status = xnn_initialize(nullptr);
+  static const xnn_status init_status =
+      xnn_initialize(nullptr);
+
   {{func_name}}_check_xnn_status(
       init_status,
       "xnn_initialize");
 
-  const float* a_ptr = static_cast<const float*>(a);
-  const float* b_ptr = static_cast<const float*>(b);
-  const float* bias_ptr = static_cast<const float*>(bias);
-  float* output_ptr = static_cast<float*>(output);
+  const float* a_ptr =
+      static_cast<const float*>(a);
 
-  const size_t extra_elements =
-      (XNN_EXTRA_BYTES + sizeof(float) - 1) / sizeof(float);
+  const float* b_ptr =
+      static_cast<const float*>(b);
 
-  // XNNPACK fully-connected input may read a few bytes past the
-  // logical end, so copy A into a padded scratch buffer.
+  const float* bias_ptr =
+      static_cast<const float*>(bias);
+
+  float* output_ptr =
+      static_cast<float*>(output);
+
   const size_t input_elements = m * k;
 
+  const size_t extra_elements =
+      (XNN_EXTRA_BYTES + sizeof(float) - 1) /
+      sizeof(float);
+
+  // XNNPACK may read a few bytes past the logical input.
   thread_local std::vector<float> input_scratch;
-  input_scratch.resize(input_elements + extra_elements);
+
+  input_scratch.resize(
+      input_elements + extra_elements);
 
   std::memcpy(
       input_scratch.data(),
@@ -100,49 +260,37 @@ struct {{func_name}}_xnn_operator_guard {
       input_scratch.end(),
       0.0f);
 
-  // The GEMM result becomes the input of approximate GELU.
-  // Keep it in a padded scratch buffer because XNNPACK unary
-  // since kernels may also read past the logical end of their input.
   const size_t output_elements = m * n;
 
+  // Keep the GEMM result in padded storage until we have
+  // separately verified that ApproxGELU is safe in-place.
   thread_local std::vector<float> activation_scratch;
-  activation_scratch.resize(output_elements + extra_elements);
 
-  {{func_name}}_xnn_operator_guard fc_guard;
+  activation_scratch.resize(
+      output_elements + extra_elements);
 
-  {{func_name}}_check_xnn_status(
-      xnn_create_fully_connected_nc_f32(
-          k,  // input channels
-          n,  // output channels
-          k,  // input stride
-          n,  // output stride
-          b_ptr,
-          bias_ptr,
-          -std::numeric_limits<float>::infinity(),
-          +std::numeric_limits<float>::infinity(),
-          0,        // flags
-          nullptr,  // weights cache
-          &fc_guard.op),
-      "xnn_create_fully_connected_nc_f32");
-
-  {{func_name}}_check_xnn_status(
-      xnn_reshape_fully_connected_nc_f32(
-          fc_guard.op,
-          m,
-          nullptr),
-      "xnn_reshape_fully_connected_nc_f32");
+  // Weights and bias are constant during inference.
+  // Do not recreate and repack the XNNPACK FC operator
+  // every time this function is called.
+  auto& context = {{func_name}}_fc_cache.get(
+      cache_id,
+      b_ptr,
+      bias_ptr,
+      m,
+      n,
+      k);
 
   {{func_name}}_check_xnn_status(
       xnn_setup_fully_connected_nc_f32(
-          fc_guard.op,
+          context.op,
           input_scratch.data(),
           activation_scratch.data()),
       "xnn_setup_fully_connected_nc_f32");
 
   {{func_name}}_check_xnn_status(
       xnn_run_operator(
-          fc_guard.op,
-          nullptr),
+          context.op,
+          ait::cpu_threadpool()),
       "xnn_run_operator(fully_connected)");
 
   std::fill(
@@ -151,6 +299,7 @@ struct {{func_name}}_xnn_operator_guard {
       0.0f);
 
   union xnn_unary_params unary_params = {};
+
   const struct xnn_quantization_params quantization = {
       0,
       1.0f,
@@ -164,12 +313,12 @@ struct {{func_name}}_xnn_operator_guard {
           &unary_params,
           &quantization,
           &quantization,
-          0,        // flags
-          m,        // batch size
-          n,        // channels
-          n,        // input stride
-          n,        // output stride
-          nullptr,  // threadpool
+          0,
+          m,
+          n,
+          n,
+          n,
+          ait::cpu_threadpool(),
           activation_scratch.data(),
           output_ptr),
       "xnn_run_unary_elementwise_nc(approxgelu)");
@@ -188,6 +337,7 @@ void {{func_name}}(
     size_t m,
     size_t n,
     size_t k,
+    uint64_t cache_id,
     ait::StreamType stream)
 """
 )
@@ -210,9 +360,11 @@ FUNC_CALL_TEMPLATE = jinja2.Template(
 {{indent}}    {{m}},
 {{indent}}    {{n}},
 {{indent}}    {{k}},
+{{indent}}    {{cache_id}},
 {{indent}}    stream);
 """
 )
+
 
 
 @registry.reg("cpu.gemm_rcr_bias_fast_gelu.config")
@@ -245,7 +397,6 @@ def gen_profiler(
     *args,
     **kwargs,
 ):
-    # XNNPACK performs CPU microkernel selection internally.
     return None
 
 
@@ -259,8 +410,13 @@ def gen_function(
 
     func_name = func_attrs["name"]
 
+    a = func_attrs["inputs"][0]
+    b = func_attrs["inputs"][1]
+
     return FUNC_TEMPLATE.render(
         func_name=func_name,
+        prepack_n=_dim_expr(b._attrs["shape"][0]),
+        prepack_k=_dim_expr(a._attrs["shape"][-1]),
         func_signature=FUNC_SIGNATURE.render(
             func_name=func_name,
         ),
@@ -268,7 +424,9 @@ def gen_function(
 
 
 @registry.reg("cpu.gemm_rcr_bias_fast_gelu.func_decl")
-def gen_function_decl(func_attrs: Dict[str, Any]) -> str:
+def gen_function_decl(
+    func_attrs: Dict[str, Any],
+) -> str:
     _validate(func_attrs)
 
     return FUNC_DECL.render(
@@ -310,5 +468,6 @@ def gen_function_call(
         m=m,
         n=n,
         k=k,
+        cache_id=str(cache_id_from_tensor_name(b._attrs["name"])) + "ULL",
         indent=indent,
     )

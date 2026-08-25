@@ -48,6 +48,16 @@ class CPU(Target):
             "-pthread",
         ]
 
+        # Optimize generated CPU code for the current x86 machine.
+        # XNNPACK itself still performs its own runtime ISA dispatch.
+        if self._arch in ("x86_64", "amd64"):
+            options.extend(
+                [
+                    "-march=native",
+                    "-mtune=native",
+                ]
+            )
+
         if self._ndebug == 1:
             options.append("-DNDEBUG")
 
@@ -84,7 +94,7 @@ class CPU(Target):
 
     def link_options(self):
         """Return libraries required by generated CPU models."""
-        return "-L/usr/local/lib -Wl,-rpath,/usr/local/lib -lXNNPACK"
+        return "-flto -Wl,-O1 -L/usr/local/lib -Wl,-rpath,/usr/local/lib -lXNNPACK"
 
     def src_extension(self):
         return ".cpp"
@@ -129,6 +139,14 @@ class CPU(Target):
             "-std=c++17",
             "-pthread",
         ]
+
+        if self._arch in ("x86_64", "amd64"):
+            options.extend(
+                [
+                    "-march=native",
+                    "-mtune=native",
+                ]
+            )
 
         if self._ndebug == 1:
             options.append("-DNDEBUG")

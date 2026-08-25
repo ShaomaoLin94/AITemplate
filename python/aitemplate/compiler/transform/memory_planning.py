@@ -77,7 +77,7 @@ def _make_tensor_usage_records(sorted_ops: List[Operator]) -> List[TensorUsageRe
             # Note that it might be OK to overwrite inputs, but let's be
             # consertative for now and not surprise users. We could always
             # make a flag to do that later if it's needed.
-            if tensor._attrs["is_param"]:
+            if tensor._attrs["is_param"] or tensor._attrs["is_input"]:
                 continue
             name = tensor._attrs["name"]
             this_tensor = tensor_records[name].tensor
@@ -112,7 +112,10 @@ def _make_tensor_usage_records(sorted_ops: List[Operator]) -> List[TensorUsageRe
         if this_tensor._attrs["is_view_of"]:
             orig_tensor = _find_original_tensor(this_tensor)
             # view of input
-            if orig_tensor._attrs["is_param"]:
+            if (
+                orig_tensor._attrs["is_param"]
+                or orig_tensor._attrs["is_input"]
+            ):
                 continue
             orig_tensor_name = orig_tensor._attrs["name"]
             assert orig_tensor_name in tensor_records
@@ -349,7 +352,7 @@ def _make_tensor_usage_records_simple_multistream(
                 # Note that it might be OK to overwrite inputs, but let's be
                 # consertative for now and not surprise users. We could always
                 # make a flag to do that later if it's needed.
-                if tensor._attrs["is_param"]:
+                if tensor._attrs["is_param"] or tensor._attrs["is_input"]:
                     continue
                 name = tensor._attrs["name"]
                 this_tensor = tensor_records[name].tensor
@@ -384,7 +387,10 @@ def _make_tensor_usage_records_simple_multistream(
         if this_tensor._attrs["is_view_of"]:
             orig_tensor = _find_original_tensor(this_tensor)
             # view of input
-            if orig_tensor._attrs["is_param"]:
+            if (
+                orig_tensor._attrs["is_param"]
+                or orig_tensor._attrs["is_input"]
+            ):
                 continue
             orig_tensor_name = orig_tensor._attrs["name"]
             assert orig_tensor_name in tensor_records

@@ -29,6 +29,7 @@ FUNC_TEMPLATE = jinja2.Template(
 #include <xnnpack.h>
 
 #include "device_functions-generated.h"
+#include "cpu_threadpool.h"
 
 namespace {
 
@@ -42,6 +43,7 @@ inline void {{func_name}}_check_xnn_status(
         std::to_string(static_cast<int>(status)));
   }
 }
+
 
 class {{func_name}}_workspace {
  public:
@@ -63,10 +65,14 @@ class {{func_name}}_workspace {
     capacity_ = 0;
 
     constexpr size_t alignment = 64;
+
     const size_t rounded_bytes =
-        ((bytes + alignment - 1) / alignment) * alignment;
+        ((bytes + alignment - 1) /
+         alignment) *
+        alignment;
 
     void* new_data = nullptr;
+
     if (posix_memalign(
             &new_data,
             alignment,
@@ -83,6 +89,7 @@ class {{func_name}}_workspace {
   void* data_ = nullptr;
   size_t capacity_ = 0;
 };
+
 
 struct {{func_name}}_xnn_context {
   xnn_operator_t qk_op = nullptr;
@@ -117,9 +124,11 @@ struct {{func_name}}_xnn_context {
     if (qk_op != nullptr) {
       xnn_delete_operator(qk_op);
     }
+
     if (softmax_op != nullptr) {
       xnn_delete_operator(softmax_op);
     }
+
     if (av_op != nullptr) {
       xnn_delete_operator(av_op);
     }
@@ -127,6 +136,7 @@ struct {{func_name}}_xnn_context {
 
   {{func_name}}_xnn_context(
       const {{func_name}}_xnn_context&) = delete;
+
   {{func_name}}_xnn_context& operator=(
       const {{func_name}}_xnn_context&) = delete;
 };
@@ -146,22 +156,33 @@ struct {{func_name}}_xnn_context {
     return;
   }
 
-  if (num_heads == 0 || batch_heads % num_heads != 0) {
+  if (num_heads == 0 ||
+      batch_heads % num_heads != 0) {
     throw std::runtime_error(
         "CPU bmm_softmax_bmm_permute: invalid number of heads");
   }
 
-  const float* q_ptr = static_cast<const float*>(q);
-  const float* k_ptr = static_cast<const float*>(k_tensor);
-  const float* v_ptr = static_cast<const float*>(v);
-  float* output_ptr = static_cast<float*>(output);
+  const float* q_ptr =
+      static_cast<const float*>(q);
 
-  const size_t batch = batch_heads / num_heads;
+  const float* k_ptr =
+      static_cast<const float*>(k_tensor);
+
+  const float* v_ptr =
+      static_cast<const float*>(v);
+
+  float* output_ptr =
+      static_cast<float*>(output);
+
+  const size_t batch =
+      batch_heads / num_heads;
 
   const size_t q_elements =
       batch_heads * m * k_dim;
+
   const size_t attention_elements =
       batch_heads * m * n;
+
   const size_t score_elements =
       batch_heads * m * o;
 
@@ -172,27 +193,73 @@ struct {{func_name}}_xnn_context {
   thread_local {{func_name}}_xnn_context context;
   thread_local {{func_name}}_workspace workspace;
 
-  // Scaling Q before Q*K^T is equivalent to scaling
-  // the attention logits afterwards, but touches fewer elements.
+  // ------------------------------------------------------------
+  // Scale Q.
+  // Parallelize over complete [K] rows.
+  // ------------------------------------------------------------
   thread_local std::vector<float> q_scaled;
-  q_scaled.resize(q_elements + extra_elements);
+  q_scaled.resize(
+      q_elements + extra_elements);
 
-  for (size_t i = 0; i < q_elements; ++i) {
-    q_scaled[i] = q_ptr[i] * scale;
-  }
+  struct q_scale_context {
+    const float* input;
+    float* output;
+    size_t width;
+    float scale;
+  };
+
+  q_scale_context scale_context{
+      q_ptr,
+      q_scaled.data(),
+      k_dim,
+      scale};
+
+  auto q_scale_task =
+      [](void* raw_context, size_t row) {
+        auto* task_context =
+            static_cast<q_scale_context*>(
+                raw_context);
+
+        const size_t offset =
+            row * task_context->width;
+
+        const float* input_row =
+            task_context->input + offset;
+
+        float* output_row =
+            task_context->output + offset;
+
+        for (size_t col = 0;
+             col < task_context->width;
+             ++col) {
+          output_row[col] =
+              input_row[col] *
+              task_context->scale;
+        }
+      };
+
+  ait::parallelize_1d(
+      q_scale_task,
+      &scale_context,
+      batch_heads * m);
 
   std::fill(
       q_scaled.begin() + q_elements,
       q_scaled.end(),
       0.0f);
 
-  // Q*K^T output and softmax output need XNNPACK tail padding
-  // because they are used as inputs to following XNNPACK operators.
+  // QK output and softmax output need XNNPACK tail padding because
+  // they are consumed by later XNNPACK operators.
   thread_local std::vector<float> logits;
   thread_local std::vector<float> probabilities;
 
-  logits.resize(attention_elements + extra_elements);
-  probabilities.resize(attention_elements + extra_elements);
+  logits.resize(
+      attention_elements +
+      extra_elements);
+
+  probabilities.resize(
+      attention_elements +
+      extra_elements);
 
   std::fill(
       logits.begin() + attention_elements,
@@ -200,17 +267,19 @@ struct {{func_name}}_xnn_context {
       0.0f);
 
   std::fill(
-      probabilities.begin() + attention_elements,
+      probabilities.begin() +
+          attention_elements,
       probabilities.end(),
       0.0f);
 
-  const size_t batch_dims[1] = {batch_heads};
+  const size_t batch_dims[1] = {
+      batch_heads};
+
+  pthreadpool_t threadpool =
+      ait::cpu_threadpool();
 
   // ------------------------------------------------------------
   // 1. Q * K^T
-  // Q: [BH, M, K]
-  // K: [BH, N, K]
-  // output: [BH, M, N]
   // ------------------------------------------------------------
   size_t workspace_size = 0;
 
@@ -224,10 +293,11 @@ struct {{func_name}}_xnn_context {
           k_dim,
           n,
           &workspace_size,
-          nullptr),
+          threadpool),
       "xnn_reshape_batch_matrix_multiply_nc_f32(QK)");
 
-  void* workspace_ptr = workspace.get(workspace_size);
+  void* workspace_ptr =
+      workspace.get(workspace_size);
 
   {{func_name}}_check_xnn_status(
       xnn_setup_batch_matrix_multiply_nc_f32(
@@ -241,7 +311,7 @@ struct {{func_name}}_xnn_context {
   {{func_name}}_check_xnn_status(
       xnn_run_operator(
           context.qk_op,
-          nullptr),
+          threadpool),
       "xnn_run_operator(QK)");
 
   std::fill(
@@ -251,7 +321,6 @@ struct {{func_name}}_xnn_context {
 
   // ------------------------------------------------------------
   // 2. Softmax over N
-  // Treat [BH, M, N] as [BH*M, N].
   // ------------------------------------------------------------
   {{func_name}}_check_xnn_status(
       xnn_reshape_softmax_nc_f32(
@@ -260,7 +329,7 @@ struct {{func_name}}_xnn_context {
           n,
           n,
           batch_heads * m,
-          nullptr),
+          threadpool),
       "xnn_reshape_softmax_nc_f32");
 
   {{func_name}}_check_xnn_status(
@@ -273,19 +342,17 @@ struct {{func_name}}_xnn_context {
   {{func_name}}_check_xnn_status(
       xnn_run_operator(
           context.softmax_op,
-          nullptr),
+          threadpool),
       "xnn_run_operator(softmax)");
 
   std::fill(
-      probabilities.begin() + attention_elements,
+      probabilities.begin() +
+          attention_elements,
       probabilities.end(),
       0.0f);
 
   // ------------------------------------------------------------
   // 3. Attention * V
-  // probabilities: [BH, M, N]
-  // V:             [BH, N, O]
-  // raw_score:     [BH, M, O]
   // ------------------------------------------------------------
   thread_local std::vector<float> raw_score;
   raw_score.resize(score_elements);
@@ -302,10 +369,11 @@ struct {{func_name}}_xnn_context {
           n,
           o,
           &workspace_size,
-          nullptr),
+          threadpool),
       "xnn_reshape_batch_matrix_multiply_nc_f32(AV)");
 
-  workspace_ptr = workspace.get(workspace_size);
+  workspace_ptr =
+      workspace.get(workspace_size);
 
   {{func_name}}_check_xnn_status(
       xnn_setup_batch_matrix_multiply_nc_f32(
@@ -319,38 +387,69 @@ struct {{func_name}}_xnn_context {
   {{func_name}}_check_xnn_status(
       xnn_run_operator(
           context.av_op,
-          nullptr),
+          threadpool),
       "xnn_run_operator(AV)");
 
   // ------------------------------------------------------------
-  // 4. Physical layout:
+  // 4. [B,H,M,O] -> [B,M,H,O]
   //
-  // raw_score:
-  //   [B, H, M, O]
-  //
-  // AITemplate bmm_softmax_bmm_permute expects:
-  //   [B, M, H, O]
-  //
-  // The compiler represents the underlying tensor as [BH, M, O]
-  // and then applies a reshape, so this permutation must happen
-  // physically inside the backend implementation.
+  // Parallelize over (B, M). Each task copies all heads for one
+  // sequence row, keeping each memcpy large and contiguous.
   // ------------------------------------------------------------
-  for (size_t b = 0; b < batch; ++b) {
-    for (size_t h = 0; h < num_heads; ++h) {
-      for (size_t row = 0; row < m; ++row) {
-        const size_t src =
-            (((b * num_heads + h) * m + row) * o);
+  struct output_permute_context {
+    const float* input;
+    float* output;
+    size_t m;
+    size_t num_heads;
+    size_t o;
+  };
 
-        const size_t dst =
-            (((b * m + row) * num_heads + h) * o);
+  output_permute_context output_context{
+      raw_score.data(),
+      output_ptr,
+      m,
+      num_heads,
+      o};
 
-        std::memcpy(
-            output_ptr + dst,
-            raw_score.data() + src,
-            o * sizeof(float));
-      }
-    }
-  }
+  auto output_permute_task =
+      [](void* raw_context, size_t task_index) {
+        auto* task_context =
+            static_cast<output_permute_context*>(
+                raw_context);
+
+        const size_t b =
+            task_index /
+            task_context->m;
+
+        const size_t row =
+            task_index %
+            task_context->m;
+
+        for (size_t h = 0;
+             h < task_context->num_heads;
+             ++h) {
+          const size_t src =
+              (((b * task_context->num_heads + h) *
+                 task_context->m + row) *
+               task_context->o);
+
+          const size_t dst =
+              (((b * task_context->m + row) *
+                 task_context->num_heads + h) *
+               task_context->o);
+
+          std::memcpy(
+              task_context->output + dst,
+              task_context->input + src,
+              task_context->o *
+                  sizeof(float));
+        }
+      };
+
+  ait::parallelize_1d(
+      output_permute_task,
+      &output_context,
+      batch * m);
 }
 """
 )
@@ -459,7 +558,9 @@ def _validate(func_attrs: Dict[str, Any]) -> None:
                 f"logical {name} rank 3"
             )
 
-        dtype = normalize_dtype(tensor._attrs["dtype"])
+        dtype = normalize_dtype(
+            tensor._attrs["dtype"])
+
         if dtype != "float32":
             raise NotImplementedError(
                 "CPU bmm_softmax_bmm_permute currently supports "
@@ -482,17 +583,23 @@ def _validate(func_attrs: Dict[str, Any]) -> None:
         )
 
     shape = func_attrs.get("shape")
+
     if shape is None or len(shape) != 1:
         raise NotImplementedError(
-            "CPU bmm_softmax_bmm_permute requires shape=(num_heads,)"
+            "CPU bmm_softmax_bmm_permute requires "
+            "shape=(num_heads,)"
         )
 
     num_heads = _static_int(shape[0])
+
     if num_heads <= 0:
-        raise ValueError("num_heads must be positive")
+        raise ValueError(
+            "num_heads must be positive")
 
 
-@registry.reg("cpu.bmm_softmax_bmm_permute.config")
+@registry.reg(
+    "cpu.bmm_softmax_bmm_permute.config"
+)
 def config(
     func_attrs: Dict[str, Any],
     dtype="float32",
@@ -506,7 +613,9 @@ def config(
     )
 
 
-@registry.reg("cpu.bmm_softmax_bmm_permute.filter")
+@registry.reg(
+    "cpu.bmm_softmax_bmm_permute.filter"
+)
 def function_filter(
     cfg,
     func_attrs,
@@ -515,18 +624,21 @@ def function_filter(
     return cfg == "xnnpack"
 
 
-@registry.reg("cpu.bmm_softmax_bmm_permute.gen_profiler")
+@registry.reg(
+    "cpu.bmm_softmax_bmm_permute.gen_profiler"
+)
 def gen_profiler(
     func_attrs,
     workdir,
     *args,
     **kwargs,
 ):
-    # XNNPACK performs microkernel selection internally.
     return None
 
 
-@registry.reg("cpu.bmm_softmax_bmm_permute.gen_function")
+@registry.reg(
+    "cpu.bmm_softmax_bmm_permute.gen_function"
+)
 def gen_function(
     func_attrs: Dict[str, Any],
     exec_cond_template=None,
@@ -542,7 +654,9 @@ def gen_function(
     )
 
 
-@registry.reg("cpu.bmm_softmax_bmm_permute.func_decl")
+@registry.reg(
+    "cpu.bmm_softmax_bmm_permute.func_decl"
+)
 def gen_function_decl(
     func_attrs: Dict[str, Any],
 ) -> str:
@@ -555,7 +669,9 @@ def gen_function_decl(
     ).strip()
 
 
-@registry.reg("cpu.bmm_softmax_bmm_permute.func_call")
+@registry.reg(
+    "cpu.bmm_softmax_bmm_permute.func_call"
+)
 def gen_function_call(
     func_attrs: Dict[str, Any],
     indent="  ",
@@ -563,30 +679,40 @@ def gen_function_call(
     _validate(func_attrs)
 
     q, k_tensor, v = func_attrs["inputs"]
+
     output = func_attrs["outputs"][0]
 
     q_accessor = func_attrs["input_accessors"][0]
+
     k_accessor = func_attrs["input_accessors"][1]
+
     v_accessor = func_attrs["input_accessors"][2]
 
     q_shape = q_accessor.original_shapes
+
     k_shape = k_accessor.original_shapes
+
     v_shape = v_accessor.original_shapes
 
-    num_heads = _static_int(func_attrs["shape"][0])
+    num_heads = _static_int(
+        func_attrs["shape"][0])
 
     return FUNC_CALL_TEMPLATE.render(
         func_name=func_attrs["name"],
         q=_input_ptr(q, q_accessor),
-        k_tensor=_input_ptr(k_tensor, k_accessor),
+        k_tensor=_input_ptr(
+            k_tensor,
+            k_accessor),
         v=_input_ptr(v, v_accessor),
         output=output._attrs["name"],
-        batch_heads=_dim_expr(q_shape[0]),
+        batch_heads=_dim_expr(
+            q_shape[0]),
         m=_dim_expr(q_shape[1]),
         n=_dim_expr(k_shape[1]),
         k_dim=_dim_expr(q_shape[2]),
         o=_dim_expr(v_shape[2]),
         num_heads=str(num_heads),
-        scale=_float_literal(func_attrs["scale"]),
+        scale=_float_literal(
+            func_attrs["scale"]),
         indent=indent,
     )

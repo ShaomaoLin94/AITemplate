@@ -27,6 +27,7 @@ FUNC_TEMPLATE = jinja2.Template(
 #include <xnnpack.h>
 
 #include "device_functions-generated.h"
+#include "cpu_threadpool.h"
 
 namespace {
 
@@ -37,9 +38,11 @@ inline void {{func_name}}_check_xnn_status(
     throw std::runtime_error(
         std::string(step) +
         " failed with XNNPACK status " +
-        std::to_string(static_cast<int>(status)));
+        std::to_string(
+            static_cast<int>(status)));
   }
 }
+
 
 struct {{func_name}}_xnn_operator_guard {
   xnn_operator_t op = nullptr;
@@ -51,41 +54,60 @@ struct {{func_name}}_xnn_operator_guard {
   }
 
   {{func_name}}_xnn_operator_guard(
-      const {{func_name}}_xnn_operator_guard&) = delete;
-  {{func_name}}_xnn_operator_guard& operator=(
-      const {{func_name}}_xnn_operator_guard&) = delete;
+      const {{func_name}}_xnn_operator_guard&) =
+      delete;
 
-  {{func_name}}_xnn_operator_guard() = default;
+  {{func_name}}_xnn_operator_guard& operator=(
+      const {{func_name}}_xnn_operator_guard&) =
+      delete;
+
+  {{func_name}}_xnn_operator_guard() =
+      default;
 };
 
 }  // namespace
+
 
 {{func_signature}}
 {
   (void)stream;
 
-  if (m == 0 || n == 0 || k == 0) {
+  if (m == 0 ||
+      n == 0 ||
+      k == 0) {
     return;
   }
 
-  static const xnn_status init_status = xnn_initialize(nullptr);
+  static const xnn_status init_status =
+      xnn_initialize(nullptr);
+
   {{func_name}}_check_xnn_status(
       init_status,
       "xnn_initialize");
 
-  const float* a_ptr = static_cast<const float*>(a);
-  const float* b_ptr = static_cast<const float*>(b);
-  const float* bias_ptr = static_cast<const float*>(bias);
-  float* output_ptr = static_cast<float*>(output);
+  const float* a_ptr =
+      static_cast<const float*>(a);
 
-  // XNNPACK kernels may read a few bytes beyond the logical end of input.
-  // Copy into a padded buffer so those reads are always safe.
-  const size_t input_elements = m * k;
+  const float* b_ptr =
+      static_cast<const float*>(b);
+
+  const float* bias_ptr =
+      static_cast<const float*>(bias);
+
+  float* output_ptr =
+      static_cast<float*>(output);
+
+  const size_t input_elements =
+      m * k;
+
   const size_t extra_elements =
-      (XNN_EXTRA_BYTES + sizeof(float) - 1) / sizeof(float);
+      (XNN_EXTRA_BYTES + sizeof(float) - 1) /
+      sizeof(float);
 
   thread_local std::vector<float> input_scratch;
-  input_scratch.resize(input_elements + extra_elements);
+
+  input_scratch.resize(
+      input_elements + extra_elements);
 
   std::memcpy(
       input_scratch.data(),
@@ -93,7 +115,8 @@ struct {{func_name}}_xnn_operator_guard {
       input_elements * sizeof(float));
 
   std::fill(
-      input_scratch.begin() + input_elements,
+      input_scratch.begin() +
+          input_elements,
       input_scratch.end(),
       0.0f);
 
@@ -101,24 +124,27 @@ struct {{func_name}}_xnn_operator_guard {
 
   {{func_name}}_check_xnn_status(
       xnn_create_fully_connected_nc_f32(
-          k,  // input channels
-          n,  // output channels
-          k,  // input stride
-          n,  // output stride
+          k,
+          n,
+          k,
+          n,
           b_ptr,
           bias_ptr,
           -std::numeric_limits<float>::infinity(),
           +std::numeric_limits<float>::infinity(),
-          0,        // flags
-          nullptr,  // weights cache
+          0,
+          nullptr,
           &guard.op),
       "xnn_create_fully_connected_nc_f32");
+
+  pthreadpool_t threadpool =
+      ait::cpu_threadpool();
 
   {{func_name}}_check_xnn_status(
       xnn_reshape_fully_connected_nc_f32(
           guard.op,
           m,
-          nullptr),
+          threadpool),
       "xnn_reshape_fully_connected_nc_f32");
 
   {{func_name}}_check_xnn_status(
@@ -131,7 +157,7 @@ struct {{func_name}}_xnn_operator_guard {
   {{func_name}}_check_xnn_status(
       xnn_run_operator(
           guard.op,
-          nullptr),
+          threadpool),
       "xnn_run_operator");
 }
 """
@@ -177,11 +203,14 @@ FUNC_CALL_TEMPLATE = jinja2.Template(
 
 def _dim_expr(dim) -> str:
     if isinstance(dim, IntImm):
-        return str(dim._attrs["values"][0])
+        return str(
+            dim._attrs["values"][0])
     return dim._attrs["name"]
 
 
-def _validate(func_attrs: Dict[str, Any]) -> None:
+def _validate(
+    func_attrs: Dict[str, Any],
+) -> None:
     a = func_attrs["inputs"][0]
     b = func_attrs["inputs"][1]
     bias = func_attrs["inputs"][2]
@@ -192,26 +221,30 @@ def _validate(func_attrs: Dict[str, Any]) -> None:
 
     if len(a_shape) < 2:
         raise NotImplementedError(
-            "CPU XNNPACK gemm_rcr_bias requires input A rank >= 2"
+            "CPU XNNPACK gemm_rcr_bias requires "
+            "input A rank >= 2"
         )
 
     if len(b_shape) != 2:
         raise NotImplementedError(
-            "CPU XNNPACK gemm_rcr_bias currently requires weight B to be rank 2"
+            "CPU XNNPACK gemm_rcr_bias requires "
+            "weight B rank 2"
         )
 
     if len(bias_shape) != 1:
         raise NotImplementedError(
-            "CPU XNNPACK gemm_rcr_bias requires a 1D bias"
+            "CPU XNNPACK gemm_rcr_bias requires "
+            "1D bias"
         )
 
-    tensors = [a, b, bias]
-    for tensor in tensors:
-        dtype = normalize_dtype(tensor._attrs["dtype"])
+    for tensor in (a, b, bias):
+        dtype = normalize_dtype(
+            tensor._attrs["dtype"])
+
         if dtype != "float32":
             raise NotImplementedError(
-                "CPU XNNPACK gemm_rcr_bias currently supports only float32; "
-                f"got {tensor._attrs['dtype']}"
+                "CPU XNNPACK gemm_rcr_bias "
+                "supports only float32"
             )
 
 
@@ -222,8 +255,6 @@ def gemm_rcr_bias_config(
 ) -> None:
     _validate(func_attrs)
 
-    # AITemplate normally stores many candidate GPU kernels here.
-    # CPU currently delegates the implementation to XNNPACK.
     func_attrs["op_instance"] = OrderedDict(
         [
             ("xnnpack", None),
@@ -240,18 +271,21 @@ def function_filter(
     return cfg == "xnnpack"
 
 
-@registry.reg("cpu.gemm_rcr_bias.gen_profiler")
+@registry.reg(
+    "cpu.gemm_rcr_bias.gen_profiler"
+)
 def gen_profiler(
     func_attrs,
     workdir,
     *args,
     **kwargs,
 ):
-    # XNNPACK performs its own CPU microkernel selection.
     return None
 
 
-@registry.reg("cpu.gemm_rcr_bias.gen_function")
+@registry.reg(
+    "cpu.gemm_rcr_bias.gen_function"
+)
 def gen_function(
     func_attrs: Dict[str, Any],
     exec_cond_template=None,
@@ -259,23 +293,23 @@ def gen_function(
 ) -> str:
     _validate(func_attrs)
 
-    func_name = func_attrs["name"]
-
     return FUNC_TEMPLATE.render(
-        func_name=func_name,
+        func_name=func_attrs["name"],
         func_signature=FUNC_SIGNATURE.render(
-            func_name=func_name,
+            func_name=func_attrs["name"]
         ),
     )
 
 
 @registry.reg("cpu.gemm_rcr_bias.func_decl")
-def gen_function_decl(func_attrs: Dict[str, Any]) -> str:
+def gen_function_decl(
+    func_attrs: Dict[str, Any],
+) -> str:
     _validate(func_attrs)
 
     return FUNC_DECL.render(
         func_signature=FUNC_SIGNATURE.render(
-            func_name=func_attrs["name"],
+            func_name=func_attrs["name"]
         )
     ).strip()
 
@@ -295,14 +329,10 @@ def gen_function_call(
     a_shape = a._attrs["shape"]
     b_shape = b._attrs["shape"]
 
-    # gemm_rcr treats every A dimension except the last one as M.
-    # Example:
-    #   A [batch, seq, hidden]
-    # becomes
-    #   M = batch * seq
-    #   K = hidden
-    m_dims = [_dim_expr(dim) for dim in a_shape[:-1]]
-    m = " * ".join(m_dims)
+    m = " * ".join(
+        _dim_expr(dim)
+        for dim in a_shape[:-1]
+    )
 
     k = _dim_expr(a_shape[-1])
     n = _dim_expr(b_shape[0])

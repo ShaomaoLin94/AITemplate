@@ -59,7 +59,7 @@ class ModelBase {
       size_t num_unbound_constants,
       uint8_t* constants,
       AITemplateAllocator& allocator)
-      : blob_(RAII_DeviceMalloc(blob_size, allocator)),
+      : blob_(RAII_DeviceMalloc(blob_size + 64, allocator)),
         workspace_(RAII_DeviceMalloc(workspace_size, allocator)),
         params_(num_inputs + num_outputs + num_unbound_constants),
         workspace_size_{workspace_size},

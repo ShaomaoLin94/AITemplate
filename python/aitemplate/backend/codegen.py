@@ -230,6 +230,20 @@ def check_not_null(
     is zero, otherwise never allow them to be null.
     """
     name = tensor._attrs["name"]
+
+    # CPU static XNNPACK fully-connected operators can keep their
+    # own packed representation after initialization. For constants
+    # explicitly marked this way, the original raw pointer may be
+    # released after packing.
+    #
+    # The generated operator itself still checks that packing has
+    # happened before accepting a nullptr weight/bias.
+    if tensor._attrs.get(
+        "allow_null_after_pack",
+        False,
+    ):
+        return ""
+
     if tensor_idx is None:
         check = name
     else:
@@ -1017,7 +1031,11 @@ class ModelContainerGenerator:
             target_has_graph_mode=target_has_graph_mode,
             unique_workspace_size=self.workspace.unique_size,
             debug_header=self.debug_header,
-            blob_size=self.max_blob_size,
+            blob_size=(
+                self.max_blob_size + 16
+                if self.target.name() == "cpu"
+                else self.max_blob_size
+            ),
             workspace_size=self.workspace.total_size(),
             num_inputs=self.num_inputs,
             num_outputs=self.num_outputs,

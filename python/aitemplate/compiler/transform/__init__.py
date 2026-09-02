@@ -49,3 +49,39 @@ from aitemplate.compiler.transform.transform_odd_alignment import (
 )
 from aitemplate.compiler.transform.transform_special_ops import transform_special_ops
 from aitemplate.compiler.transform.transform_strided_ops import transform_strided_ops
+
+# CPU_GEMM_ADD_LAYERNORM_FUSION
+from aitemplate.compiler.transform.optimize_graph import (
+    optimize_graph as _ait_base_optimize_graph,
+)
+from aitemplate.compiler.transform.fuse_cpu_gemm_add_layernorm import (
+    fuse_cpu_gemm_add_layernorm,
+)
+
+
+def optimize_graph(
+    sorted_graph,
+    workdir,
+    optimize=True,
+):
+    sorted_graph = _ait_base_optimize_graph(
+        sorted_graph,
+        workdir,
+        optimize,
+    )
+
+    from aitemplate.backend.target import Target
+
+    current_target = Target.current()
+
+    if (
+        current_target is not None
+        and current_target.name() == "cpu"
+    ):
+        sorted_graph = (
+            fuse_cpu_gemm_add_layernorm(
+                sorted_graph
+            )
+        )
+
+    return sorted_graph

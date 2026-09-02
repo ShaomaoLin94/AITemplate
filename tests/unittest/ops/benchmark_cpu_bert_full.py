@@ -102,33 +102,78 @@ def write_static_fc_prepack_manifest(
                 f"{ait_name}"
             )
 
-        static_dst_ops = [
-            op
-            for op in compiled_tensor.dst_ops()
-            if op._attrs.get("op")
-            in supported_static_fc_ops
-        ]
+        # A fused GEMM may now look like:
+        #
+        #   [A, B, bias, residual, gamma, beta]
+        #
+        # Therefore destination-op type alone is no longer
+        # enough to identify FC parameters.
+        #
+        # Only:
+        #   inputs[1] = FC weight
+        #   inputs[2] = FC bias
+        static_fc_uses = []
 
-        if not static_dst_ops:
+        for op in compiled_tensor.dst_ops():
+            if (
+                op._attrs.get("op")
+                not in supported_static_fc_ops
+            ):
+                continue
+
+            op_inputs = op._attrs.get(
+                "inputs",
+                [],
+            )
+
+            if len(op_inputs) < 3:
+                continue
+
+            if op_inputs[1] is compiled_tensor:
+                static_fc_uses.append(
+                    (op, "weight")
+                )
+
+            elif op_inputs[2] is compiled_tensor:
+                static_fc_uses.append(
+                    (op, "bias")
+                )
+
+        # Fused LayerNorm gamma/beta also have a GEMM dst_op,
+        # but they are not FC weight/bias and are skipped here.
+        if not static_fc_uses:
             continue
 
-        if len(static_dst_ops) != 1:
+        if len(static_fc_uses) != 1:
             raise RuntimeError(
-                "Expected one static-FC destination op "
-                f"for {logical_name}, got "
-                f"{len(static_dst_ops)}"
+                "Expected one static-FC use for "
+                f"{logical_name}, got "
+                f"{len(static_fc_uses)}"
             )
+
+        op, slot_kind = static_fc_uses[0]
 
         if logical_name.endswith(".weight"):
             base_name = logical_name[:-len(".weight")]
-            kind = "weight"
+            logical_kind = "weight"
+
         elif logical_name.endswith(".bias"):
             base_name = logical_name[:-len(".bias")]
-            kind = "bias"
+            logical_kind = "bias"
+
         else:
             raise RuntimeError(
                 "Static FC parameter must be a weight "
                 f"or bias: {logical_name}"
+            )
+
+        # Protect against future graph changes where a parameter
+        # name and its actual GEMM slot disagree.
+        if logical_kind != slot_kind:
+            raise RuntimeError(
+                "Static FC input-position mismatch for "
+                f"{logical_name}: logical kind="
+                f"{logical_kind}, op slot={slot_kind}"
             )
 
         shape = [
@@ -136,12 +181,10 @@ def write_static_fc_prepack_manifest(
             for dim in param_tensor._attrs["shape"]
         ]
 
-        op = static_dst_ops[0]
-
         groups.setdefault(
             base_name,
             {},
-        )[kind] = {
+        )[logical_kind] = {
             "logical_name": logical_name,
             "ait_name": ait_name,
             "shape": shape,
@@ -169,11 +212,25 @@ def write_static_fc_prepack_manifest(
             )
 
         weight_shape = weight["shape"]
+        bias_shape = bias["shape"]
 
         if len(weight_shape) != 2:
             raise RuntimeError(
                 f"Expected 2D FC weight for {base_name}, "
                 f"got {weight_shape}"
+            )
+
+        if len(bias_shape) != 1:
+            raise RuntimeError(
+                f"Expected 1D FC bias for {base_name}, "
+                f"got {bias_shape}"
+            )
+
+        if int(bias_shape[0]) != int(weight_shape[0]):
+            raise RuntimeError(
+                "FC bias/output-channel mismatch for "
+                f"{base_name}: weight={weight_shape}, "
+                f"bias={bias_shape}"
             )
 
         cache_id = cache_id_from_tensor_name(
@@ -186,7 +243,7 @@ def write_static_fc_prepack_manifest(
                 "weight_name": weight["ait_name"],
                 "weight_shape": weight_shape,
                 "bias_name": bias["ait_name"],
-                "bias_shape": bias["shape"],
+                "bias_shape": bias_shape,
                 "prepack_symbol":
                     weight["op_name"] + "_prepack",
                 "cache_id": cache_id,

@@ -25,6 +25,7 @@ FUNC_TEMPLATE = jinja2.Template(
 #include <xnnpack.h>
 
 #include "device_functions-generated.h"
+#include "cpu_threadpool.h"
 
 namespace {
 
@@ -48,9 +49,7 @@ struct {{func_name}}_xnn_context {
         "xnn_initialize");
 
     {{func_name}}_check_xnn_status(
-        xnn_create_softmax_nc_f32(
-            0 /* flags */,
-            &op),
+        xnn_create_softmax_nc_f32(0, &op),
         "xnn_create_softmax_nc_f32");
   }
 
@@ -79,8 +78,7 @@ struct {{func_name}}_xnn_context {
   const size_t num_elements = batch_size * channels;
   const size_t extra_elements =
       (XNN_EXTRA_BYTES + sizeof(float) - 1) / sizeof(float);
-  const size_t padded_elements =
-      num_elements + extra_elements;
+  const size_t padded_elements = num_elements + extra_elements;
 
   thread_local {{func_name}}_xnn_context context;
   thread_local std::vector<float> input_scratch;
@@ -89,7 +87,6 @@ struct {{func_name}}_xnn_context {
   input_scratch.resize(padded_elements);
   output_scratch.resize(padded_elements);
 
-// copy input to scratch buffer and pad with zeros to avoid OOB reads
   std::memcpy(
       input_scratch.data(),
       input,
@@ -104,14 +101,16 @@ struct {{func_name}}_xnn_context {
       output_scratch.end(),
       0.0f);
 
+  pthreadpool_t threadpool = ait::cpu_threadpool();
+
   {{func_name}}_check_xnn_status(
       xnn_reshape_softmax_nc_f32(
           context.op,
           channels,
-          channels /* input stride */,
-          channels /* output stride */,
+          channels,
+          channels,
           batch_size,
-          nullptr /* threadpool */),
+          threadpool),
       "xnn_reshape_softmax_nc_f32");
 
   {{func_name}}_check_xnn_status(
@@ -122,9 +121,7 @@ struct {{func_name}}_xnn_context {
       "xnn_setup_softmax_nc_f32");
 
   {{func_name}}_check_xnn_status(
-      xnn_run_operator(
-          context.op,
-          nullptr /* threadpool */),
+      xnn_run_operator(context.op, threadpool),
       "xnn_run_operator");
 
   std::memcpy(
@@ -147,13 +144,11 @@ void {{func_name}}(
 """
 )
 
-
 FUNC_DECL = jinja2.Template(
     """
 {{func_signature}};
 """
 )
-
 
 FUNC_CALL_TEMPLATE = jinja2.Template(
     """
@@ -178,59 +173,43 @@ def _validate(func_attrs: Dict[str, Any]) -> None:
     shape = input_tensor._attrs["shape"]
     dim = func_attrs["dim"]
 
-    if dim != len(shape) - 1:   # XNNPACK softmax only supports the last dimension
+    if dim != len(shape) - 1:
         raise NotImplementedError(
-            "CPU XNNPACK softmax currently supports only the last dimension; "
-            f"got dim={dim}, rank={len(shape)}"
+            "CPU XNNPACK softmax currently supports only the last dimension"
         )
 
-    dtype = normalize_dtype(input_tensor._attrs["dtype"])
-    if dtype != "float32":
+    if normalize_dtype(input_tensor._attrs["dtype"]) != "float32":
         raise NotImplementedError(
-            "CPU XNNPACK softmax currently supports only float32; "
-            f"got dtype={input_tensor._attrs['dtype']}"
+            "CPU XNNPACK softmax currently supports only float32"
         )
 
 
 @registry.reg("cpu.softmax.gen_function")
 def gen_function(func_attrs: Dict[str, Any]) -> str:
     _validate(func_attrs)
-
-    func_name = func_attrs["name"]
     return FUNC_TEMPLATE.render(
-        func_name=func_name,
-        func_signature=FUNC_SIGNATURE.render(
-            func_name=func_name,
-        ),
+        func_name=func_attrs["name"],
+        func_signature=FUNC_SIGNATURE.render(func_name=func_attrs["name"]),
     )
 
 
 @registry.reg("cpu.softmax.func_decl")
 def gen_function_decl(func_attrs: Dict[str, Any]) -> str:
     _validate(func_attrs)
-
     return FUNC_DECL.render(
-        func_signature=FUNC_SIGNATURE.render(
-            func_name=func_attrs["name"],
-        )
+        func_signature=FUNC_SIGNATURE.render(func_name=func_attrs["name"])
     ).strip()
 
 
 @registry.reg("cpu.softmax.func_call")
-def gen_function_call(
-    func_attrs: Dict[str, Any],
-    indent="  ",
-) -> str:
+def gen_function_call(func_attrs: Dict[str, Any], indent="  ") -> str:
     _validate(func_attrs)
-
     input_tensor = func_attrs["inputs"][0]
     output_tensor = func_attrs["outputs"][0]
-
     shape = input_tensor._attrs["shape"]
     channels = _dim_expr(shape[-1])
-
     batch_dims = [_dim_expr(dim) for dim in shape[:-1]]
-    batch_size = " * ".join(batch_dims) if batch_dims else "1" # last dimension is channels, so batch size is product of all other dimensions
+    batch_size = " * ".join(batch_dims) if batch_dims else "1"
 
     return FUNC_CALL_TEMPLATE.render(
         func_name=func_attrs["name"],

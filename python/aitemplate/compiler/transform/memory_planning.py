@@ -444,30 +444,43 @@ def simple_multistream_memory_planning(sorted_graph: List[Tensor]):
 
 def proxy_memory_planning(sorted_graph: List[Tensor]):
     run_mode = multistream_mode()
+
     if run_mode == 0:
-        # no multistream
+        # CPU-specific late memory fusion.
+        #
+        # Run this immediately before lifetime analysis so the existing
+        # AITemplate memory planner naturally accounts for aliased tensors.
+        from aitemplate.backend.target import Target
+
+        target = Target.current()
+
+        if target is not None and target.name() == "cpu":
+            from aitemplate.compiler.transform.cpu_memory_fusion import (
+                mark_cpu_memory_fusions,
+            )
+
+            sorted_graph = mark_cpu_memory_fusions(sorted_graph)
+
         max_blob, constant_offset, workspace = greedy_by_size_memory_planning(
             sorted_graph
         )
+
     elif run_mode == 1:
-        # simple multistream
+        # Keep multistream conservative for now.
+        # In-place lifetime rules need parallel-use analysis before enabling it.
         max_blob, constant_offset, workspace = simple_multistream_memory_planning(
             sorted_graph
         )
+
     else:
-        # unsupported
         raise Exception(f"Unsupported multistream mode ({run_mode})")
 
-    # print some statistics
     _LOGGER.info(
         f"Workspace shared_size={workspace.shared_size} unique_size={workspace.unique_size}"
     )
     _LOGGER.info(f"max_blob={max_blob} constant_offset={constant_offset}")
 
-    # done
     return (max_blob, constant_offset, workspace)
 
 
-# memory_planning = greedy_by_size_memory_planning
-# memory_planning = naive_memory_planning
 memory_planning = proxy_memory_planning

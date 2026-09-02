@@ -12,6 +12,7 @@ import jinja2
 from aitemplate.backend import registry
 from aitemplate.backend.cpu.gemm_universal.static_fc import (
     cache_id_from_tensor_name,
+    render_static_fc_context,
 )
 from aitemplate.backend.cpu.gemm_universal.gemm_rcr_bias import (
     _dim_expr,
@@ -22,11 +23,14 @@ from aitemplate.backend.cpu.gemm_universal.gemm_rcr_bias import (
 FUNC_TEMPLATE = jinja2.Template(
     r"""
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <limits>
 #include <list>
+#include <new>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -51,122 +55,7 @@ inline void {{func_name}}_check_xnn_status(
 }
 
 
-struct {{func_name}}_xnn_context {
-  xnn_operator_t op = nullptr;
-
-  uint64_t cache_id = 0;
-  const float* weight_ptr = nullptr;
-  const float* bias_ptr = nullptr;
-
-  size_t cached_m = 0;
-  size_t n = 0;
-  size_t k = 0;
-
-  {{func_name}}_xnn_context(
-      uint64_t id,
-      const float* weight,
-      const float* bias,
-      size_t output_channels,
-      size_t input_channels)
-      : cache_id(id),
-        weight_ptr(weight),
-        bias_ptr(bias),
-        n(output_channels),
-        k(input_channels) {
-
-    {{func_name}}_check_xnn_status(
-        xnn_create_fully_connected_nc_f32(
-            k,
-            n,
-            k,
-            n,
-            weight_ptr,
-            bias_ptr,
-            -std::numeric_limits<float>::infinity(),
-            +std::numeric_limits<float>::infinity(),
-            0,
-            nullptr,
-            &op),
-        "xnn_create_fully_connected_nc_f32");
-  }
-
-  ~{{func_name}}_xnn_context() {
-    if (op != nullptr) {
-      xnn_delete_operator(op);
-    }
-  }
-
-  {{func_name}}_xnn_context(
-      const {{func_name}}_xnn_context&) = delete;
-
-  {{func_name}}_xnn_context& operator=(
-      const {{func_name}}_xnn_context&) = delete;
-
-  bool matches(
-      uint64_t id,
-      size_t output_channels,
-      size_t input_channels) const {
-    return cache_id == id &&
-           n == output_channels &&
-           k == input_channels;
-  }
-
-  void reshape(size_t m) {
-    if (cached_m == m) {
-      return;
-    }
-
-    {{func_name}}_check_xnn_status(
-        xnn_reshape_fully_connected_nc_f32(
-            op,
-            m,
-            ait::cpu_threadpool()),
-        "xnn_reshape_fully_connected_nc_f32");
-
-    cached_m = m;
-  }
-};
-
-
-struct {{func_name}}_xnn_cache {
-  std::list<{{func_name}}_xnn_context> contexts;
-
-  {{func_name}}_xnn_context& get(
-      uint64_t id,
-      const float* weight,
-      const float* bias,
-      size_t m,
-      size_t n,
-      size_t k) {
-
-    for (auto& context : contexts) {
-      if (context.matches(id, n, k)) {
-        context.reshape(m);
-        return context;
-      }
-    }
-
-    if (weight == nullptr || bias == nullptr) {
-      throw std::runtime_error(
-          "CPU static FC cache miss after raw weight release");
-    }
-
-    contexts.emplace_back(
-        id,
-        weight,
-        bias,
-        n,
-        k);
-
-    auto& context = contexts.back();
-    context.reshape(m);
-    return context;
-  }
-};
-
-
-thread_local {{func_name}}_xnn_cache
-    {{func_name}}_fc_cache;
+{{static_fc_context}}
 
 }  // namespace
 
@@ -191,11 +80,10 @@ extern "C" AIT_EXPORT int
       init_status,
       "xnn_initialize(prepack)");
 
-  {{func_name}}_fc_cache.get(
+  {{func_name}}_get_cache().prepack(
       cache_id,
       static_cast<const float*>(b),
       static_cast<const float*>(bias),
-      1,
       n,
       k);
 
@@ -311,7 +199,7 @@ extern "C" AIT_EXPORT int
    * XNNPACK has packed them.
    */
   auto& context =
-      {{func_name}}_fc_cache.get(
+      {{func_name}}_get_cache().get(
           cache_id,
           b_ptr,
           bias_ptr,
@@ -319,18 +207,9 @@ extern "C" AIT_EXPORT int
           n,
           k);
 
-  {{func_name}}_check_xnn_status(
-      xnn_setup_fully_connected_nc_f32(
-          context.op,
-          xnn_input_ptr,
-          gelu_input_ptr),
-      "xnn_setup_fully_connected_nc_f32");
-
-  {{func_name}}_check_xnn_status(
-      xnn_run_operator(
-          context.op,
-          ait::cpu_threadpool()),
-      "xnn_run_operator(fully_connected)");
+  context.run(
+      xnn_input_ptr,
+      gelu_input_ptr);
 
   /*
    * Only the fallback scratch needs explicit tail padding.
@@ -506,6 +385,7 @@ def gen_function(
 
     return FUNC_TEMPLATE.render(
         func_name=func_name,
+        static_fc_context=render_static_fc_context(func_name),
         prepack_n=_dim_expr(
             b._attrs["shape"][0]
         ),

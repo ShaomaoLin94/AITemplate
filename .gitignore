@@ -144,3 +144,6 @@ tags
 
 # vim temp files
 *.swp
+
+# Local CPU benchmark logs
+benchmark_logs/

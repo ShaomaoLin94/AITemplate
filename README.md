@@ -1,6 +1,6 @@
 # AITemplate x86 CPU Backend
 
-An experimental **x86 CPU backend for AITemplate** for efficient BERT-family inference with XNNPACK.
+An experimental **x86 CPU backend for AITemplate** for efficient BERT-family inference with [XNNPACK](https://github.com/google/xnnpack).
 
 This project extends Meta's original [AITemplate](https://github.com/facebookincubator/AITemplate) AI compiler with x86 CPU code generation, XNNPACK-backed operators, static weight prepacking, memory optimizations, and multithreaded execution.
 

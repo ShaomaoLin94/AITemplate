@@ -77,9 +77,9 @@ Constant fully connected weights are packed through XNNPACK and reused across in
 
 The implementation uses a stable cache identity instead of depending directly on the raw weight pointer.
 
-Once a static weight has been successfully packed, the original constant storage can be released when it is no longer needed.
+Once a static weight has been successfully packed, the original constant storage can be released since it is no longer needed.
 
-This significantly reduces retained memory for larger models.
+This can significantly reduce memory usage.
 
 ## Memory Optimizations
 
@@ -120,7 +120,7 @@ All final benchmark configurations use batch size 1, sequence length 128, and FP
 
 Final public benchmarks use:
 
-- Intel Core i9-12900H
+- Intel Core i9-12900H (all tests run on assigned P-cores)
 - batch size 1
 - sequence length 128
 - FP32
@@ -131,8 +131,6 @@ Final public benchmarks use:
 Benchmark parameters use deterministic synthetic FP32 weights rather than downloaded pretrained checkpoints.
 
 AITemplate and PyTorch reconstruct the same deterministic tensors for numerical and performance comparison.
-
-Weight generation, model construction, and static weight packing are excluded from measured inference latency.
 
 ## BERT-base Performance
 

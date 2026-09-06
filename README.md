@@ -45,7 +45,7 @@ AITemplate reduces latency by approximately **4–6%** and uses approximately **
 | Threads | AITemplate | PyTorch | AIT / PyTorch |
 |---:|---:|---:|---:|
 | 1 | 2835.89 ms | 2889.43 ms | 1.019x |
-| 2 | 1589.29 ms | 1597.28 ms | 1.005x |
+| 2 | 1589.29 ms | 1618.48 ms | 1.019x |
 | 4 | 974.21 ms | 992.63 ms | 1.018x |
 
 AITemplate and PyTorch provide approximately equivalent latency within ±2%, while AITemplate uses approximately **6–7% less resident memory**.

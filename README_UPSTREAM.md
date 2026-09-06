@@ -6,14 +6,6 @@
 [![Deploy docs to Pages](https://github.com/facebookincubator/AITemplate/actions/workflows/pages.yaml/badge.svg)](https://github.com/facebookincubator/AITemplate/actions/workflows/pages.yaml)
 
 
-## x86 CPU Backend Extension
-
-This branch adds an experimental XNNPACK-backed x86 CPU backend for BERT-family inference, including BERT-base, BERT-large, and Megatron-BERT 1.3B.
-
-See [CPU_BACKEND.md](CPU_BACKEND.md) for architecture details, supported operators, optimizations, and benchmark results.
-
----
-
 AITemplate (AIT) is a Python framework that transforms deep neural networks into CUDA (NVIDIA GPU) / HIP (AMD GPU) C++ code for lightning-fast inference serving. AITemplate highlights include:
 
 - High performance: close to roofline fp16 TensorCore (NVIDIA GPU) / MatrixCore (AMD GPU) performance on major models, including ResNet, MaskRCNN, BERT, VisionTransformer, Stable Diffusion, etc.

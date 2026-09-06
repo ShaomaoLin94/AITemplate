@@ -1,8 +1,8 @@
 # AITemplate x86 CPU Backend
 
-An experimental **x86 CPU backend for AITemplate**, targeting efficient BERT-family inference with XNNPACK.
+An experimental **x86 CPU backend for AITemplate** for efficient BERT-family inference with XNNPACK.
 
-This project extends Meta's original [AITemplate](https://github.com/facebookincubator/AITemplate) compiler with CPU code generation, XNNPACK-backed operators, static weight prepacking, memory optimizations, and multithreaded execution.
+This project extends Meta's original [AITemplate](https://github.com/facebookincubator/AITemplate) AI compiler with x86 CPU code generation, XNNPACK-backed operators, static weight prepacking, memory optimizations, and multithreaded execution.
 
 ## Highlights
 
@@ -90,7 +90,7 @@ Execution flow:
 ## Key Optimizations
 
 - XNNPACK static fully connected weight prepacking
-- Release of raw constant weights after packing
+- Release of raw constant weights after each packing
 - Stable static-weight cache identity
 - Residual buffer aliasing
 - In-place ApproxGELU
@@ -113,9 +113,9 @@ For implementation details and limitations, see [CPU_BACKEND.md](CPU_BACKEND.md)
 
 ## Scope
 
-This project focuses on FP32 BERT-family CPU inference and does not yet provide complete AITemplate CPU operator coverage.
+This project focuses on FP32 BERT-family CPU inference but does not provide complete AITemplate CPU operator coverage.
 
-Some original AITemplate frontend and runtime paths remain GPU-oriented, so CPU-specific execution paths are currently used where upstream interfaces assume CUDA execution.
+Some original AITemplate frontend and runtime paths still remain GPU-oriented, so CPU-specific execution paths are currently used where upstream interfaces assume CUDA execution.
 
 ## Upstream AITemplate
 

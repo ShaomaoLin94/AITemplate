@@ -18,7 +18,7 @@ This project extends Meta's original [AITemplate](https://github.com/facebookinc
 
 ## Performance
 
-Benchmarks were measured on an Intel Core i9-12900H with batch size 1, sequence length 128, FP32, using 1 / 2 / 4 CPU threads.
+Benchmarks were measured on an Intel Core i9-12900H (all tests run on P-cores) with batch size 1, sequence length 128, FP32, using 1 / 2 / 4 CPU threads.
 
 ### BERT-base
 

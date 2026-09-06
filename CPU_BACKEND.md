@@ -164,7 +164,7 @@ Measured resident memory is approximately **20% lower** than the PyTorch referen
 |---:|---:|---:|---:|
 | 1 | 2835.89 ms | 2889.43 ms | 1.019x |
 | 2 | 1589.29 ms | 1597.28 ms | 1.005x |
-| 4 | 974.21 ms | 962.71 ms | 0.988x |
+| 4 | 974.21 ms | 992.63 ms | 1.018x |
 
 For Megatron-BERT 1.3B, AITemplate and PyTorch provide approximately equivalent latency within ±2%.
 

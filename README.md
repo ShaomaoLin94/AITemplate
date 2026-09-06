@@ -89,15 +89,13 @@ Execution flow:
 
 ## Key Optimizations
 
-- XNNPACK static fully connected weight prepacking
+- Use XNNPACK static fully connected weight prepacking
 - Release of raw constant weights after each packing
 - Stable static-weight cache identity
-- Residual buffer aliasing
 - In-place ApproxGELU
 - Residual + LayerNorm memory overlay
 - Reduced unnecessary scratch buffers
 - Attention Q scaling fused into QKV permutation
-- Persistent shared CPU thread pool
 
 ## Benchmark Data
 

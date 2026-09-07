@@ -126,7 +126,7 @@ AITemplate provides approximately **4–6% lower latency** and uses approximatel
 | Threads | AITemplate | PyTorch | Speedup |
 |---:|---:|---:|---:|
 | 1 | 2835.89 ms | 2889.43 ms | 1.019x |
-| 2 | 1589.29 ms | `<VERIFY>` | `<VERIFY>` |
+| 2 | 1589.29 ms | 1618.48 ms | 1.018x |
 | 4 | 974.21 ms | 992.63 ms | 1.019x |
 
 For Megatron-BERT 1.3B, AITemplate and PyTorch provide approximately equivalent latency within **±2%**, while AITemplate uses approximately **6–7% less resident memory**.

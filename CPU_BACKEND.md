@@ -1,22 +1,27 @@
 # AITemplate x86 CPU Backend
 
-This branch extends AITemplate with an experimental **x86 CPU backend** for efficient BERT-family inference.
+This document describes the design, implementation, bottlenecks, and optimization decisions of the experimental **x86 CPU backend for AITemplate**.
 
-The implementation preserves AITemplate's graph compilation and code-generation model while generating CPU C++ code and using **XNNPACK** for optimized FP32 computation.
+The project investigates whether AITemplate's GPU-oriented compilation model can be extended to efficient CPU Transformer inference while preserving its ahead-of-time graph compilation and generated C++ execution model.
 
-## Project Scope
+The current implementation focuses on FP32 BERT-family workloads and uses **XNNPACK** as the primary optimized CPU kernel library.
 
-The current backend targets complete inference for:
+## Research Motivation
 
-- BERT-base
-- BERT-large
-- Megatron-BERT 1.3B
+AITemplate was originally designed primarily for GPU inference through CUDA and ROCm.
 
-The implementation is currently focused on FP32 BERT-family workloads rather than complete CPU operator coverage for all AITemplate models.
+Its original design assumptions therefore differ from CPU execution in several important ways. GPU-oriented execution commonly prioritizes kernel selection, device workspace management, and accelerator-specific code generation, while CPU inference is highly sensitive to memory traffic, weight preparation, thread management, and repeated operator-level overhead.
 
-## Architecture
+A direct translation from GPU operators to CPU kernels can therefore produce a functionally correct backend without necessarily providing competitive end-to-end inference performance.
 
-The primary CPU backend implementation is located under:
+The project focuses on two main questions:
+
+1. How can AITemplate's compilation and runtime model be extended to support x86 CPU execution?
+2. After basic CPU execution is available, which bottlenecks dominate BERT inference and which of them can be reduced using compile-time or static-model information?
+
+## Backend Architecture
+
+The primary implementation is located under:
 
     python/aitemplate/backend/cpu/
     ├── embedding/
@@ -54,9 +59,11 @@ The high-level compilation flow is:
             ↓
     Compiled shared library
 
+The backend therefore preserves AITemplate's original ahead-of-time compilation model instead of introducing a separate CPU runtime framework.
+
 ## Implemented BERT Operators
 
-The CPU backend currently covers the main operations required by the tested BERT-family models:
+The current CPU backend supports the main operators required by the tested BERT-family models:
 
 - BERT embeddings
 - GEMM + bias
@@ -67,60 +74,195 @@ The CPU backend currently covers the main operations required by the tested BERT
 - Softmax
 - QKV permutation
 - Attention Q scaling
-- QK^T → Softmax → AV attention path
+- QKᵀ → Softmax → AV attention path
 - Tensor identity
 - Tensor split
 
-## Static Weight Prepacking
+XNNPACK provides optimized FP32 kernels where appropriate, while additional generated CPU code handles BERT-specific execution, fusion, memory management, and data movement.
 
-Constant fully connected weights are packed through XNNPACK and reused across inference calls.
+## Bottleneck Analysis
 
-The implementation uses a stable cache identity instead of depending directly on the raw weight pointer.
+### 1. Static Weight Preparation
 
-Once a static weight has been successfully packed, the original constant storage can be released since it is no longer needed.
+BERT contains a large number of fully connected layers whose weights remain constant during inference.
 
-This can significantly reduce memory usage.
+A naive execution path can introduce two forms of unnecessary overhead:
 
-## Memory Optimizations
+- repeated preparation or packing of constant weights
+- retaining both raw and packed representations in memory
 
-Several BERT execution paths were modified to reduce intermediate allocations and memory traffic:
+These costs become increasingly important as model size grows.
+
+### Optimization
+
+Constant fully connected weights are prepacked through XNNPACK and reused across inference calls.
+
+The implementation also uses a stable cache identity rather than relying directly on raw weight pointers.
+
+After successful prepacking, the original raw constant storage can be released when it is no longer required.
+
+This shifts work from repeated inference-time processing into model initialization and reduces memory footprint.
+
+## 2. Intermediate Memory Traffic
+
+Transformer execution contains many intermediate values between:
+
+- GEMM
+- activation
+- residual addition
+- LayerNorm
+- QKV transformation
+- attention
+
+On CPUs, these operations are not only limited by arithmetic throughput. Additional temporary buffers and memory copies can increase cache pressure and memory bandwidth usage.
+
+A computationally inexpensive operator can therefore still contribute measurable latency if it requires a complete additional pass over a large tensor.
+
+### Optimization
+
+Several execution paths were redesigned to reduce temporary memory usage:
 
 - residual buffer aliasing
 - in-place ApproxGELU
 - residual + LayerNorm buffer overlay
 - removal of unnecessary input scratch buffers
-- Q scaling fused into QKV permutation/copy
 - release of raw constants after static weight packing
 
-These optimizations become especially important for BERT-large and Megatron-BERT 1.3B.
+These changes reduce both intermediate memory footprint and data movement.
 
-## CPU Multithreading
+## 3. Operator Boundary Overhead
 
-The backend uses a persistent CPU thread pool.
+AITemplate graphs are composed of individual operators, but on a CPU, keeping every transformation as an independent memory pass can be inefficient.
 
-The thread count can be configured with:
+For example, Q scaling is mathematically inexpensive but still requires reading and writing the Q tensor when implemented as a separate operation.
+
+The same issue appears with activation, residual handling, and layout transformation.
+
+### Optimization
+
+Where compatible, lightweight operations are folded into existing data movement or compute paths.
+
+One example is:
+
+    Q scaling
+        +
+    QKV permutation / copy
+
+Instead of materializing a separately scaled Q tensor, scaling is performed while Q is already being copied into the attention layout.
+
+The objective is therefore not only kernel optimization, but also reducing the number of times intermediate tensors must be materialized.
+
+## 4. Scratch Buffer Allocation
+
+Some CPU operator implementations initially required temporary input or output buffers to adapt tensor layouts or satisfy kernel interfaces.
+
+Repeated allocation or oversized scratch storage increases both runtime overhead and memory usage.
+
+### Optimization
+
+Scratch buffers are reused where possible, and unnecessary buffers are removed entirely when input layouts can be consumed directly.
+
+Persistent or reusable storage is preferred over repeated allocation during inference.
+
+## 5. Thread Management
+
+Multithreading improves CPU throughput only when thread-management overhead remains small relative to operator execution time.
+
+Creating independent worker resources for individual operators would introduce additional overhead and produce inconsistent execution behavior.
+
+### Optimization
+
+The backend uses a persistent CPU thread pool:
+
+    static/include/cpu_threadpool.h
+
+The number of threads can be configured through:
 
     AIT_CPU_NUM_THREADS=<N>
 
-XNNPACK operators use the shared backend thread pool, while hand-written CPU loops use the same parallel execution infrastructure.
+XNNPACK operators use the shared backend thread pool, while hand-written backend loops use the same parallel execution infrastructure.
 
 If `AIT_CPU_NUM_THREADS` is not specified, execution defaults to one thread.
 
-## Tested Models
+## 6. GEMM-Dominated Execution
 
-All final benchmark configurations use batch size 1, sequence length 128, and FP32.
+Profiling and model scaling reveal an important limitation.
 
-| Model | Layers | Hidden | Heads | Intermediate |
-|---|---:|---:|---:|---:|
-| BERT-base | 12 | 768 | 12 | 3072 |
-| BERT-large | 24 | 1024 | 16 | 4096 |
-| Megatron-BERT 1.3B | 24 | 2048 | 32 | 8192 |
+As hidden dimensions increase, an increasing fraction of total inference time is spent inside large GEMM operations.
+
+This is especially visible in Megatron-BERT 1.3B.
+
+At that point, optimizations such as scratch reuse, fusion, and reduced intermediate memory traffic still reduce overhead, but they affect a smaller fraction of total execution time.
+
+Both XNNPACK and the PyTorch CPU backend already contain highly optimized matrix multiplication implementations.
+
+As a result:
+
+- BERT-base shows the largest relative benefit from backend/runtime optimization
+- BERT-large remains moderately faster while also reducing memory usage
+- Megatron-BERT becomes close to PyTorch in latency because large GEMMs dominate execution
+
+This suggests that further performance gains for larger Transformer models increasingly depend on GEMM implementation and scheduling rather than only graph-level or runtime overhead.
+
+## Static Weight Prepacking
+
+Constant fully connected weights are packed once through XNNPACK.
+
+The backend maintains stable packed-weight cache identities so that the packed representation does not depend directly on the lifetime or address of the original raw tensor.
+
+Once packing is complete and the raw constant is no longer needed, the original storage can be released.
+
+This optimization provides two benefits:
+
+1. repeated inference calls avoid weight preparation
+2. memory usage is reduced by eliminating redundant weight representations
+
+The effect becomes more important for BERT-large and Megatron-BERT 1.3B because their parameter storage is substantially larger.
+
+## Memory Optimizations
+
+The current backend includes:
+
+- residual buffer aliasing
+- in-place ApproxGELU
+- residual + LayerNorm buffer overlay
+- scratch buffer reuse
+- removal of unnecessary temporary input buffers
+- Q scaling fused into QKV permutation/copy
+- release of raw constants after static weight packing
+
+These optimizations target both latency and resident memory usage.
+
+## Attention Path
+
+The BERT attention path performs:
+
+    QKV projection
+        ↓
+    QKV permutation
+        ↓
+    Q scaling
+        ↓
+    QKᵀ
+        ↓
+    Softmax
+        ↓
+    AV
+        ↓
+    output permutation
+
+The CPU implementation reduces intermediate work by combining compatible transformation stages.
+
+In particular, Q scaling is performed during QKV permutation/copy instead of through a separate tensor pass.
+
+The attention implementation therefore attempts to reduce memory movement in addition to using optimized matrix operations.
 
 ## Benchmark Methodology
 
-Final public benchmarks use:
+Final benchmark configurations use:
 
-- Intel Core i9-12900H (all tests run on assigned P-cores)
+- Intel Core i9-12900H
+- assigned P-cores
 - batch size 1
 - sequence length 128
 - FP32
@@ -131,6 +273,16 @@ Final public benchmarks use:
 Benchmark parameters use deterministic synthetic FP32 weights rather than downloaded pretrained checkpoints.
 
 AITemplate and PyTorch reconstruct the same deterministic tensors for numerical and performance comparison.
+
+## Tested Models
+
+| Model | Layers | Hidden | Heads | Intermediate |
+|---|---:|---:|---:|---:|
+| BERT-base | 12 | 768 | 12 | 3072 |
+| BERT-large | 24 | 1024 | 16 | 4096 |
+| Megatron-BERT 1.3B | 24 | 2048 | 32 | 8192 |
+
+Using models with increasing hidden dimensions also provides a way to observe how the dominant performance bottleneck changes with model scale.
 
 ## BERT-base Performance
 
@@ -158,21 +310,21 @@ Measured resident memory is approximately **20% lower** than the PyTorch referen
 
 ## Megatron-BERT 1.3B Performance
 
-| Threads | AITemplate | PyTorch | AIT / PyTorch |
+| Threads | AITemplate | PyTorch | Speedup |
 |---:|---:|---:|---:|
 | 1 | 2835.89 ms | 2889.43 ms | 1.019x |
-| 2 | 1589.29 ms | 1597.28 ms | 1.005x |
-| 4 | 974.21 ms | 992.63 ms | 1.018x |
+| 2 | 1589.29 ms | 1618.48 ms | 1.018x |
+| 4 | 974.21 ms | 992.63 ms | 1.019x |
 
-For Megatron-BERT 1.3B, AITemplate and PyTorch provide approximately equivalent latency within ±2%.
+AITemplate and PyTorch provide approximately equivalent latency within **±2%**.
 
 AITemplate uses approximately **6–7% less resident memory**.
 
-As hidden size increases, runtime becomes increasingly dominated by large GEMM operations. Since both XNNPACK and the PyTorch CPU backend provide highly optimized GEMM implementations, the relative advantage from AITemplate-side memory and fusion optimizations becomes smaller.
+The reduced relative latency advantage is consistent with the increasing dominance of GEMM computation at larger hidden dimensions.
 
 ## Thread Scaling
 
-AITemplate scaling relative to one thread:
+AITemplate scaling relative to single-thread execution:
 
 | Model | 2 Threads | 4 Threads |
 |---|---:|---:|
@@ -209,7 +361,17 @@ Current limitations include:
 - CPU tests use lower-level runtime interfaces where necessary
 - some frontend modules still require CPU-specific configuration to avoid CUDA target detection
 
-The implementation is therefore intended as a focused x86 CPU backend for BERT-family inference rather than a replacement for AITemplate's CUDA and ROCm backends.
+The current implementation should therefore be viewed as a focused investigation of x86 CPU Transformer inference within AITemplate rather than a replacement for the existing CUDA and ROCm backends.
+
+## Current Performance Interpretation
+
+The current results suggest three main observations:
+
+1. AITemplate's ahead-of-time compilation model can be extended to execute complete BERT-family inference on x86 CPUs.
+2. Static graph information can be used to reduce weight preparation, intermediate memory usage, and operator-level overhead.
+3. As model size grows, large GEMMs increasingly dominate execution, limiting the relative benefit of surrounding compiler/runtime optimizations.
+
+This distinction is important because the remaining bottleneck is no longer simply "CPU backend overhead"; for larger Transformer models, further gains increasingly require improving or better scheduling the GEMM computation itself.
 
 ## Upstream Project
 

@@ -1,14 +1,12 @@
 # Towards Efficient BERT Inference on x86 CPUs with AITemplate
 
-An experimental **x86 CPU backend for AITemplate**, investigating how a GPU-centric deep learning compiler can be extended to provide efficient BERT-family inference on general-purpose CPUs.
-
-The backend preserves AITemplate's ahead-of-time graph compilation and code-generation model while introducing CPU execution with [XNNPACK](https://github.com/google/XNNPACK), static weight prepacking, memory-aware execution, and operator-level optimizations.
+An experimental **x86 CPU backend for AITemplate**. The backend preserves AITemplate's ahead-of-time graph compilation and code-generation model while introducing CPU execution with [XNNPACK](https://github.com/google/XNNPACK), static weight prepacking, memory-aware execution, and operator-level optimizations.
 
 ## Motivation
 
-AITemplate was originally designed around GPU execution, with its backend and runtime primarily targeting CUDA and ROCm.
+AITemplate was originally designed for GPU execution, with its backend and runtime primarily targeting CUDA and ROCm.
 
-Simply replacing GPU kernels with CPU implementations is not sufficient to obtain competitive CPU inference performance. On CPUs, performance is also affected by repeated weight preparation, temporary buffers, intermediate memory traffic, and operator boundaries.
+Simply replacing GPU kernels with CPU implementations is not sufficient to obtain competitve CPU inference performance. On CPUs, performance is also affected by repeated weight preparation, temporary buffers, intermediate memory traffic, and operator boundaries.
 
 This project therefore explores two questions:
 
@@ -19,7 +17,7 @@ BERT-family models are used as the main workload because they combine large GEMM
 
 ## Main Bottlenecks
 
-Several bottlenecks emerged during the CPU backend development:
+Several bottlenecks during the CPU backend development:
 
 - **Static weight preparation**  
   Fully connected weights remain constant across inference calls, yet repeatedly preparing or retaining multiple weight representations adds unnecessary overhead and memory usage.

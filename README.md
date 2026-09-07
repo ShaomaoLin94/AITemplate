@@ -2,7 +2,7 @@
 
 An experimental **x86 CPU backend for AITemplate**, investigating how a GPU-centric deep learning compiler can be extended to provide efficient BERT-family inference on general-purpose CPUs.
 
-The backend preserves AITemplate's ahead-of-time graph compilation and code-generation model while introducing CPU execution with [XNNPACK](https://github.com/google/XNNPACK), static weight prepacking, memory-aware execution, operator-level optimizations, and multithreading.
+The backend preserves AITemplate's ahead-of-time graph compilation and code-generation model while introducing CPU execution with [XNNPACK](https://github.com/google/XNNPACK), static weight prepacking, memory-aware execution, and operator-level optimizations.
 
 ## Motivation
 

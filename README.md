@@ -30,15 +30,9 @@ Several bottlenecks emerged during the CPU backend development:
 - **Operator boundary overhead**  
   Lightweight operations such as Q scaling, activation, and layout transformation may still require additional memory passes when executed separately.
 
-- **CPU parallel execution**  
-  Efficient multithreading requires persistent worker management rather than repeatedly creating parallel execution resources.
-
-- **GEMM dominance at larger model sizes**  
-  As hidden dimensions increase, runtime becomes increasingly dominated by large GEMMs, reducing the relative impact of compiler-side memory and fusion optimizations.
-
 ## Key Optimizations
 
-The CPU backend introduces:
+The CPU backend involves:
 
 - XNNPACK-backed FP32 operators
 - Static fully connected weight prepacking
@@ -46,9 +40,7 @@ The CPU backend introduces:
 - Stable static-weight cache identity
 - Scratch buffer reuse and elimination
 - In-place ApproxGELU
-- Residual + LayerNorm memory overlay
 - Attention Q scaling fused into QKV permutation
-- Persistent CPU thread pool
 - Configurable multithreading with `AIT_CPU_NUM_THREADS`
 
 The goal is not only to optimize individual kernels, but also to reduce overhead **between** kernels.

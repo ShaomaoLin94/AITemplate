@@ -137,12 +137,12 @@ Benchmark implementations are located under:
 
     tests/unittest/ops/
 
-For architecture, implementation details, bottleneck analysis, and limitations, see [CPU_BACKEND.md](CPU_BACKEND.md).
-
 ## Scope
 
 This project focuses on **FP32 BERT-family inference on x86 CPUs** rather than complete CPU operator coverage for AITemplate.
 Some original AITemplate frontend and runtime paths remain GPU-oriented, so CPU-specific execution paths are currently required where upstream interfaces assume CUDA execution.
+
+For architecture, implementation details, bottleneck analysis, and limitations, see [CPU_BACKEND.md](CPU_BACKEND.md).
 
 ## Upstream AITemplate
 

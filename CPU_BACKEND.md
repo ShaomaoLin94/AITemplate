@@ -88,7 +88,7 @@ A naive execution path can introduce two forms of unnecessary overhead:
 
 These costs become increasingly important as model size grows.
 
-### Optimization
+#### Optimization
 
 Constant fully connected weights are prepacked through XNNPACK and reused across inference calls.
 
@@ -98,7 +98,7 @@ After successful prepacking, the original raw constant storage can be released w
 
 This shifts work from repeated inference-time processing into model initialization and reduces memory footprint.
 
-## 2. Intermediate Memory Traffic
+### 2. Intermediate Memory Traffic
 
 Transformer execution contains many intermediate values between:
 
@@ -113,7 +113,7 @@ On CPUs, these operations are not only limited by arithmetic throughput. Additio
 
 A computationally inexpensive operator can therefore still contribute measurable latency if it requires a complete additional pass over a large tensor.
 
-### Optimization
+#### Optimization
 
 Several execution paths were redesigned to reduce temporary memory usage:
 
@@ -125,7 +125,7 @@ Several execution paths were redesigned to reduce temporary memory usage:
 
 These changes reduce both intermediate memory footprint and data movement.
 
-## 3. Operator Boundary Overhead
+### 3. Operator Boundary Overhead
 
 AITemplate graphs are composed of individual operators, but on a CPU, keeping every transformation as an independent memory pass can be inefficient.
 
@@ -133,7 +133,7 @@ For example, Q scaling is mathematically inexpensive but still requires reading 
 
 The same issue appears with activation, residual handling, and layout transformation.
 
-### Optimization
+#### Optimization
 
 Where compatible, lightweight operations are folded into existing data movement or compute paths.
 
@@ -147,39 +147,19 @@ Instead of materializing a separately scaled Q tensor, scaling is performed whil
 
 The objective is therefore not only kernel optimization, but also reducing the number of times intermediate tensors must be materialized.
 
-## 4. Scratch Buffer Allocation
+### 4. Scratch Buffer Allocation
 
 Some CPU operator implementations initially required temporary input or output buffers to adapt tensor layouts or satisfy kernel interfaces.
 
 Repeated allocation or oversized scratch storage increases both runtime overhead and memory usage.
 
-### Optimization
+#### Optimization
 
 Scratch buffers are reused where possible, and unnecessary buffers are removed entirely when input layouts can be consumed directly.
 
 Persistent or reusable storage is preferred over repeated allocation during inference.
 
-## 5. Thread Management
-
-Multithreading improves CPU throughput only when thread-management overhead remains small relative to operator execution time.
-
-Creating independent worker resources for individual operators would introduce additional overhead and produce inconsistent execution behavior.
-
-### Optimization
-
-The backend uses a persistent CPU thread pool:
-
-    static/include/cpu_threadpool.h
-
-The number of threads can be configured through:
-
-    AIT_CPU_NUM_THREADS=<N>
-
-XNNPACK operators use the shared backend thread pool, while hand-written backend loops use the same parallel execution infrastructure.
-
-If `AIT_CPU_NUM_THREADS` is not specified, execution defaults to one thread.
-
-## 6. GEMM-Dominated Execution
+### 5. GEMM-Dominated Execution
 
 Profiling and model scaling reveal an important limitation.
 

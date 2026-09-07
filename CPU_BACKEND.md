@@ -14,11 +14,6 @@ Its original design assumptions therefore differ from CPU execution in several i
 
 A direct translation from GPU operators to CPU kernels can therefore produce a functionally correct backend without necessarily providing competitive end-to-end inference performance.
 
-The project focuses on two main questions:
-
-1. How can AITemplate's compilation and runtime model be extended to support x86 CPU execution?
-2. After basic CPU execution is available, which bottlenecks dominate BERT inference and which of them can be reduced using compile-time or static-model information?
-
 ## Backend Architecture
 
 The primary implementation is located under:

@@ -8,7 +8,7 @@ The backend preserves AITemplate's ahead-of-time graph compilation and code-gene
 
 AITemplate was originally designed around GPU execution, with its backend and runtime primarily targeting CUDA and ROCm.
 
-Simply replacing GPU kernels with CPU implementations is not sufficient to obtain competitive CPU inference performance. On CPUs, performance is also affected by repeated weight preparation, temporary buffers, intermediate memory traffic, operator boundaries, and thread-management overhead.
+Simply replacing GPU kernels with CPU implementations is not sufficient to obtain competitive CPU inference performance. On CPUs, performance is also affected by repeated weight preparation, temporary buffers, intermediate memory traffic, and operator boundaries.
 
 This project therefore explores two questions:
 
@@ -144,7 +144,6 @@ For architecture, implementation details, bottleneck analysis, and limitations, 
 ## Scope
 
 This project focuses on **FP32 BERT-family inference on x86 CPUs** rather than complete CPU operator coverage for AITemplate.
-
 Some original AITemplate frontend and runtime paths remain GPU-oriented, so CPU-specific execution paths are currently required where upstream interfaces assume CUDA execution.
 
 ## Upstream AITemplate

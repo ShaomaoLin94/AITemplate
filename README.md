@@ -99,17 +99,17 @@ Benchmarks were measured on an **Intel Core i9-12900H**, using assigned P-cores 
 | 2 | 112.58 ms | 124.50 ms | 1.106x |
 | 4 | 69.07 ms | 75.24 ms | 1.089x |
 
-AITemplate provides approximately **8–10% lower latency** than the PyTorch CPU reference.
+AITemplate provides approximately **8–10% lower latency** than the PyTorch CPU reference and uses approximately **13% less resident memory**.
 
 ### BERT-large
 
 | Threads | AITemplate | PyTorch | Speedup |
 |---:|---:|---:|---:|
-| 1 | 730.85 ms | 764.61 ms | 1.046x |
+| 1 | 725.25 ms | 772.61 ms | 1.065× |
 | 2 | 405.92 ms | 424.53 ms | 1.046x |
 | 4 | 255.09 ms | 270.90 ms | 1.062x |
 
-AITemplate provides approximately **4–6% lower latency** and uses approximately **20% less resident memory**.
+AITemplate provides approximately **6% lower latency** and uses approximately **20% less resident memory**.
 
 ### Megatron-BERT 1.3B
 
@@ -134,7 +134,7 @@ Benchmark implementations are located under:
 This project focuses on **FP32 BERT-family inference on x86 CPUs** rather than complete CPU operator coverage for AITemplate.
 Some original AITemplate frontend and runtime paths remain GPU-oriented, so CPU-specific execution paths are currently required where upstream interfaces assume CUDA execution.
 
-For architecture, implementation details, bottleneck analysis, and limitations, see [CPU_BACKEND.md](CPU_BACKEND.md).
+For architecture, implementation details, bottleneck analysis, and limitations, see [report.pdf](report.pdf).
 
 ## Upstream AITemplate
 

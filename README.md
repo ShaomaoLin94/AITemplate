@@ -123,15 +123,7 @@ For Megatron-BERT 1.3B, AITemplate and PyTorch provide approximately equivalent 
 
 The smaller relative speedup at this scale reflects the increasing dominance of large GEMM operations.
 
-## Benchmark Data
-
-Processed benchmark results are available under:
-
-    benchmark_results/
-    ├── all_models.json
-    ├── bert_base.json
-    ├── bert_large.json
-    └── megatron_bert_1_3b.json
+## Benchmark
 
 Benchmark implementations are located under:
 

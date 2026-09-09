@@ -1,4 +1,4 @@
-# Towards Efficient BERT Inference on x86 CPUs with AITemplate
+# Efficient BERT Inference on x86 CPUs with AITemplate
 
 An experimental **x86 CPU backend for AITemplate**. The backend preserves AITemplate's ahead-of-time graph compilation and code-generation model while introducing CPU execution with [XNNPACK](https://github.com/google/XNNPACK), static weight prepacking, memory-aware execution, and operator-level optimizations.
 

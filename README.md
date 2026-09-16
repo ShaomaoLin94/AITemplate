@@ -121,7 +121,7 @@ AITemplate provides approximately **6% lower latency** and uses approximately **
 
 For Megatron-BERT 1.3B, AITemplate and PyTorch provide approximately equivalent latency within **±2%**, while AITemplate uses approximately **6–7% less resident memory**.
 
-The smaller relative speedup at this scale reflects the increasing dominance of large GEMM operations.
+The smaller relative speedup at this scale **reflects the increasing dominance of large GEMM operations.**
 
 ## Benchmark
 

@@ -99,7 +99,7 @@ Benchmarks were measured on an **Intel Core i9-12900H**, using assigned P-cores 
 | 2 | 112.58 ms | 124.50 ms | 1.106x |
 | 4 | 69.07 ms | 75.24 ms | 1.089x |
 
-AITemplate provides approximately **8–10% lower latency** than the PyTorch CPU reference and uses approximately **13% less resident memory**.
+AITemplate provides approximately **8–10% lower latency** than the PyTorch CPU reference and uses approximately **11% less resident memory**.
 
 ### BERT-large
 
@@ -119,7 +119,7 @@ AITemplate provides approximately **7% lower latency** and uses approximately **
 | 2 | 1589.29 ms | 1618.48 ms | 1.018x |
 | 4 | 974.21 ms | 992.63 ms | 1.019x |
 
-For Megatron-BERT 1.3B, AITemplate and PyTorch provide approximately equivalent latency within **±2%**, while AITemplate uses approximately **6–7% less resident memory**.
+For Megatron-BERT 1.3B, AITemplate and PyTorch provide approximately equivalent latency within **2%**, while AITemplate uses approximately **7% less resident memory**.
 
 The smaller relative speedup at this scale **reflects the increasing dominance of large GEMM operations.**
 
